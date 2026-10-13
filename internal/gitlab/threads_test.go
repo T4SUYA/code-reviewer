@@ -478,3 +478,44 @@ func TestSubmitReview_WithoutThreadsToKeepNeedsNoIdentityLookup(t *testing.T) {
 		}
 	}
 }
+
+func TestSubmitReview_KeepsDismissedAndOpenThreadsTogether(t *testing.T) {
+	open := botNote(1, "aa", 10)
+	dismissed := botNote(2, "bb", 11)
+	stale := botNote(3, "cc", 12)
+	discussions := []Discussion{
+		{ID: "still-open", Notes: []Note{open}},
+		{ID: "dismissed", Notes: []Note{dismissed, reply("reviewer", 90)}},
+		{ID: "fixed", Notes: []Note{stale}},
+	}
+	notes := []Note{open, dismissed, stale}
+
+	for _, tt := range []struct {
+		mode        string
+		wantResolve []string
+		wantDelete  []int
+	}{
+		{mode: "resolve", wantResolve: []string{"fixed"}},
+		{mode: "delete", wantDelete: []int{3}},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			srv, resolved, deleted := reviewServer(t, discussions, notes)
+			defer srv.Close()
+			req := vcs.SubmitReviewRequest{
+				Summary:          "summary",
+				CleanupMode:      tt.mode,
+				KeepFingerprints: []string{"bb"},
+				OpenFingerprints: []string{"aa"},
+			}
+			if err := NewClient(srv.URL, "tok").SubmitReview(context.Background(), "proj", "7", req); err != nil {
+				t.Fatalf("SubmitReview: %v", err)
+			}
+			if fmt.Sprint(*resolved) != fmt.Sprint(tt.wantResolve) {
+				t.Errorf("resolved %v, want %v", *resolved, tt.wantResolve)
+			}
+			if fmt.Sprint(*deleted) != fmt.Sprint(tt.wantDelete) {
+				t.Errorf("deleted %v, want %v", *deleted, tt.wantDelete)
+			}
+		})
+	}
+}
