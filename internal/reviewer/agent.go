@@ -74,6 +74,32 @@ type AgentResult struct {
 	Verdicts []FindingVerdict `json:"verdicts,omitempty"`
 }
 
+// AgentAudit summarises one agent loop run for the audit log, so a loop that
+// stopped early or never got an answer is visible without reading stderr.
+type AgentAudit struct {
+	Iterations     int            `json:"iterations"`
+	StopReason     string         `json:"stop_reason"`
+	ToolCalls      map[string]int `json:"tool_calls,omitempty"`
+	FindingsBefore int            `json:"findings_before"`
+	FindingsAfter  int            `json:"findings_after"`
+	Error          string         `json:"error,omitempty"`
+}
+
+// newAgentAudit builds the audit summary, or nil when the loop never ran.
+func newAgentAudit(res *AgentResult, err error, before, after int) *AgentAudit {
+	if res == nil && err == nil {
+		return nil
+	}
+	a := &AgentAudit{FindingsBefore: before, FindingsAfter: after, StopReason: "error"}
+	if res != nil {
+		a.Iterations, a.StopReason, a.ToolCalls = res.Iterations, res.StopReason, res.ToolCalls
+	}
+	if err != nil {
+		a.Error = err.Error()
+	}
+	return a
+}
+
 // Agent loop verdict statuses.
 const (
 	// VerdictVerified marks a finding that survived a completed agent loop.
@@ -194,7 +220,11 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	genConfig := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
 		Temperature:       genai.Ptr(float32(0.0)), // Deterministic for refinement (ML review).
+		ResponseMIMEType:  "application/json",
+		ResponseSchema:    agentResponseSchema(true),
 	}
+	finalConfig := *genConfig
+	finalConfig.ResponseSchema = agentResponseSchema(false)
 
 	// Build conversation history.
 	history := []*genai.Content{
@@ -223,7 +253,11 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			break
 		}
 
-		resp, err := chatter.Chat(ctx, history, genConfig)
+		turnConfig := genConfig
+		if i == cfg.MaxIterations-1 {
+			turnConfig = &finalConfig
+		}
+		resp, err := chatter.Chat(ctx, history, turnConfig)
 		if err != nil {
 			result.StopReason = "error"
 			result.Usage = totalUsage // Preserve usage accumulated so far.
@@ -242,9 +276,12 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 		// Extract model response text.
 		modelText := extractResponseText(resp)
 		if modelText == "" {
-			slog.Warn("agent loop: empty model response", "iteration", i+1)
+			// Surfaced as an error: breaking out silently would let a model that
+			// can never answer look like a loop that verified every finding.
 			result.StopReason = "error"
-			break
+			result.Usage = totalUsage
+			result.Verdicts = buildVerdicts(initialFindings, result.Findings, false)
+			return result, fmt.Errorf("agent iteration %d: empty model response (%s)", i+1, describeEmptyResponse(resp))
 		}
 
 		// Append assistant turn to history.
@@ -292,10 +329,11 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 
 			// Append tool result to history as user message.
 			toolJSON, _ := json.Marshal(toolResult) //nolint:errcheck
-			history = append(history, genai.NewContentFromText(
-				fmt.Sprintf("<tool_result>%s</tool_result>", string(toolJSON)),
-				genai.RoleUser,
-			))
+			resultText := fmt.Sprintf("<tool_result>%s</tool_result>", string(toolJSON))
+			if i+1 == cfg.MaxIterations-1 {
+				resultText += "\nThis is the last turn: no more tool calls. Return the refined findings or done."
+			}
+			history = append(history, genai.NewContentFromText(resultText, genai.RoleUser))
 
 		case "findings":
 			// Parse refined findings.
@@ -400,6 +438,29 @@ func validateRefinedFindings(initial, refined []model.Finding) []model.Finding {
 		}
 	}
 	return validated
+}
+
+// describeEmptyResponse explains why a response carried no text, using the
+// finish reason or the prompt block reason the API reported.
+func describeEmptyResponse(resp *genai.GenerateContentResponse) string {
+	if resp == nil {
+		return "no response"
+	}
+	if len(resp.Candidates) == 0 {
+		if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" {
+			return "prompt blocked: " + string(resp.PromptFeedback.BlockReason)
+		}
+		return "no candidates"
+	}
+	c := resp.Candidates[0]
+	detail := "finish reason " + string(c.FinishReason)
+	if c.FinishReason == "" {
+		detail = "no finish reason"
+	}
+	if c.FinishMessage != "" {
+		detail += ": " + c.FinishMessage
+	}
+	return detail
 }
 
 // extractResponseText pulls text from a genai response.

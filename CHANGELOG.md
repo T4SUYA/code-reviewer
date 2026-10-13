@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - GitLab multi-line suggestions replaced the lines above the comment instead of the finding's range. The suggestion block is now `suggestion:-0+N`, reaching from the comment's first line down to the last. Ranges longer than 100 lines below the first line, which GitLab silently clamps, post without a suggestion block.
+- `--agent` on Vertex AI: the refinement loop could end on its first call when the model answered with a native function call the API rejects (`MALFORMED_FUNCTION_CALL`, empty response). Refinement turns now request schema-constrained JSON, and the last turn can only return findings or `done`, so the loop reaches a verdict.
+- An empty model response in the agent loop is now an error naming the finish reason instead of a silent stop, and the audit log gains an `agent` object (`iterations`, `stop_reason`, `tool_calls`, `findings_before`, `findings_after`, `error`).
 
 ## [0.25.1] — 2026-10-10
 
