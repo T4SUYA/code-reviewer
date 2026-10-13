@@ -475,15 +475,16 @@ func (c *Client) DeleteNote(ctx context.Context, projectID, mrIID string, noteID
 // If changedFiles is non-empty, only notes referencing those files are deleted;
 // the summary note is always deleted so it can be replaced with an updated one.
 func (c *Client) CleanPreviousReviews(ctx context.Context, projectID, mrIID string, changedFiles []string) (int, error) {
-	return c.cleanPreviousReviews(ctx, projectID, mrIID, changedFiles, nil)
+	return c.cleanPreviousReviews(ctx, projectID, mrIID, changedFiles, preserved{})
 }
 
-// cleanPreviousReviews is CleanPreviousReviews that leaves in place the
-// dismissed threads identified by keepFingerprints. They are the record that
-// lets later runs avoid re-raising a finding other people already closed out.
-func (c *Client) cleanPreviousReviews(ctx context.Context, projectID, mrIID string, changedFiles []string, keepFingerprints []string) (int, error) {
+// cleanPreviousReviews is CleanPreviousReviews that leaves in place the notes
+// of the threads in keep: dismissed threads, the record that lets later runs
+// avoid re-raising a finding other people already closed out, and open threads
+// whose finding this run reports again.
+func (c *Client) cleanPreviousReviews(ctx context.Context, projectID, mrIID string, changedFiles []string, kept preserved) (int, error) {
 	deleted := 0
-	keep := c.keptNoteIDs(ctx, projectID, mrIID, keepFingerprints)
+	keep := kept.noteIDs
 
 	if len(changedFiles) > 0 {
 		changedSet := make(map[string]bool, len(changedFiles))
@@ -547,18 +548,18 @@ func (c *Client) cleanPreviousReviews(ctx context.Context, projectID, mrIID stri
 
 // ResolvePreviousReviews resolves all bot-tagged discussions on an MR.
 func (c *Client) ResolvePreviousReviews(ctx context.Context, projectID, mrIID string, changedFiles []string) (int, error) {
-	return c.resolvePreviousReviews(ctx, projectID, mrIID, changedFiles, nil)
+	return c.resolvePreviousReviews(ctx, projectID, mrIID, changedFiles, preserved{})
 }
 
-// resolvePreviousReviews is ResolvePreviousReviews that leaves the dismissed
-// threads identified by keepFingerprints as they are: a person's reply or
-// resolution is their state to keep, not the tool's to overwrite.
-func (c *Client) resolvePreviousReviews(ctx context.Context, projectID, mrIID string, changedFiles []string, keepFingerprints []string) (int, error) {
+// resolvePreviousReviews is ResolvePreviousReviews that leaves the threads in
+// keep as they are: a person's reply or resolution is their state to keep, not
+// the tool's to overwrite, and an open thread whose finding this run reports
+// again stays open.
+func (c *Client) resolvePreviousReviews(ctx context.Context, projectID, mrIID string, changedFiles []string, keep preserved) (int, error) {
 	discussions, err := c.ListDiscussions(ctx, projectID, mrIID)
 	if err != nil {
 		return 0, err
 	}
-	keep := c.keptNoteIDs(ctx, projectID, mrIID, keepFingerprints)
 
 	changedSet := make(map[string]bool, len(changedFiles))
 	for _, f := range changedFiles {
@@ -567,7 +568,7 @@ func (c *Client) resolvePreviousReviews(ctx context.Context, projectID, mrIID st
 
 	resolved := 0
 	for _, d := range discussions {
-		if len(d.Notes) > 0 && keep[d.Notes[0].ID] {
+		if keep.keeps(d) {
 			continue
 		}
 		isBotDiscussion := false
@@ -615,15 +616,16 @@ func (c *Client) resolvePreviousReviews(ctx context.Context, projectID, mrIID st
 // if the Draft Notes API is unavailable (GitLab < 15.11 or CE without the feature).
 func (c *Client) SubmitReview(ctx context.Context, projectID, mrIID string, req vcs.SubmitReviewRequest) error {
 	// 1. Clean previous bot comments.
+	keep := c.preservedThreads(ctx, projectID, mrIID, req.KeepFingerprints, req.OpenFingerprints)
 	if req.CleanupMode == "resolve" {
-		resolved, err := c.resolvePreviousReviews(ctx, projectID, mrIID, req.ChangedFiles, req.KeepFingerprints)
+		resolved, err := c.resolvePreviousReviews(ctx, projectID, mrIID, req.ChangedFiles, keep)
 		if err != nil {
 			slog.Warn("failed to resolve previous reviews", "error", err)
 		} else if resolved > 0 {
 			slog.Info(fmt.Sprintf("resolved %d previous bot discussion(s)", resolved))
 		}
 	} else {
-		deleted, err := c.cleanPreviousReviews(ctx, projectID, mrIID, req.ChangedFiles, req.KeepFingerprints)
+		deleted, err := c.cleanPreviousReviews(ctx, projectID, mrIID, req.ChangedFiles, keep)
 		if err != nil {
 			slog.Warn("failed to clean previous reviews", "error", err)
 		} else if deleted > 0 {
