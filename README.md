@@ -339,6 +339,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--confidence-floor` | Minimum model confidence percent (1-100) required to report a finding | `80` |
 | `--context-files` | Directory-scoped guidance files (comma-separated, e.g. `AGENTS.md`) | — |
 | `--temperature` | Sampling temperature for review calls, 0-2 (unset = built-in 0.2) | — |
+| `--use-temperature` | Send a temperature with model calls; `--use-temperature=false` sends none so the model's own default applies (conflicts with `--temperature`) | `true` |
 | `--extra-rules` | Additional prompt rules | — |
 | `--custom-prompt` | Path to custom system prompt file | — |
 | `--dry-run` | Analyze without posting | `false` |
@@ -401,6 +402,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `REVIEW_CONFIDENCE_FLOOR` | Minimum model confidence percent (1-100) to report a finding | `80` |
 | `REVIEW_CONTEXT_FILES` | Directory-scoped guidance files, comma-separated | — |
 | `REVIEW_TEMPERATURE` | Sampling temperature for review calls (0-2) | — |
+| `REVIEW_USE_TEMPERATURE` | Set to `false` to send no temperature on any model call | `true` |
 | `REVIEW_CUSTOM_PROMPT` | Path to custom system prompt | — |
 | `CODE_REVIEW_PLATFORM_CONFIG` | Platform rules YAML path, comma-separated paths, or glob | — |
 | `CODE_REVIEW_PLATFORM_REVIEW_MD` | Platform guidelines markdown path or glob | — |
@@ -438,6 +440,7 @@ model: gemini-3.8-flash
 token_limit: 1000000     # Optional: explicit context window token limit override
 confidence_floor: 80     # Optional: minimum model confidence percent (1-100) to report a finding
 temperature: 0           # Optional: sampling temperature (0-2); unset = built-in 0.2
+use_temperature: true    # Optional: false = send no temperature at all (model default applies)
 focus: [bugs, security]
 context_files: [AGENTS.md]   # Optional: include the nearest AGENTS.md for each changed directory
 min_severity: low
@@ -530,6 +533,10 @@ Rules for who may dismiss:
 - `dismissal_mode: resolve_only` (`--dismissal-mode`, `REVIEW_DISMISSAL_MODE`) makes a plain reply stop dismissing HIGH and CRITICAL findings: only a resolution by someone other than the author does. A reply-only thread is then left out of the dismissed locations in the prompt, so the model can raise the finding again and it is re-posted. Lower severities are unchanged. GitHub cannot read thread resolution, so there `resolve_only` never dismisses a HIGH or CRITICAL finding. The default, `any`, keeps the behavior described above.
 - The feature is on by default in CI mode and has no opt-out setting yet.
 
+For repeatable verdicts on unchanged code, `temperature: 0` (or `--temperature 0`) lowers sampling randomness.
+
+Some models deprecate or reject sampling parameters. Google's Gemini 3 documentation, for example, recommends keeping `temperature` at its default and lists it among the deprecated sampling parameters. For such models set `use_temperature: false` (or `--use-temperature=false`, or `REVIEW_USE_TEMPERATURE=false`): the tool then sends no temperature on any call (review, summary, explain, consensus and the agent loop, over Vertex AI or `--api-url`), and the model's own default applies. It cannot be combined with `temperature`. For repeatable verdicts on such models, prefer multi-model consensus (`--models`).
+
 #### Suppressed findings in the audit log
 
 A suppressed finding is not posted, so it is also absent from `severity_counts`, which counts posted findings only. To let a caller that gates on the audit log (`--audit-log`) see them, each entry adds, only when something was suppressed:
@@ -540,8 +547,6 @@ A suppressed finding is not posted, so it is also absent from `severity_counts`,
 ```json
 {"severity_counts":{"MEDIUM":1},"suppressed":[{"fingerprint":"3fa9c1d27b40e8aa","severity":"high","category":"security","file":"auth.go","line":42,"dismissed_note_id":1187,"author_only":false}],"suppressed_severity_counts":{"HIGH":1}}
 ```
-
-For repeatable verdicts on unchanged code, `temperature: 0` (or `--temperature 0`) lowers sampling randomness. Google recommends leaving Gemini 3.x models at their default temperature, so on those prefer multi-model consensus.
 
 ### Auto-Approve
 
