@@ -158,7 +158,7 @@ code-reviewer hook install
 ### 🛠️ Common Local CLI Recipes
 
 ```bash
-# Review against a specific git ref
+# Review against a specific git ref (the ref goes last; flags after it are rejected)
 code-reviewer --diff HEAD~3
 
 # Review specific files only
@@ -342,7 +342,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--use-temperature` | Send a temperature with model calls; `--use-temperature=false` sends none so the model's own default applies (conflicts with `--temperature`) | `true` |
 | `--extra-rules` | Additional prompt rules | — |
 | `--custom-prompt` | Path to custom system prompt file | — |
-| `--dry-run` | Analyze without posting | `false` |
+| `--dry-run` | Analyze without posting (with `--ci`, the merge request is still read) | `false` |
 | `--json` | Output results as JSON | `false` |
 | `--sarif` | Write SARIF 2.1.0 output to file | — |
 | `--sast` | Write GitLab SAST report to file | — |
