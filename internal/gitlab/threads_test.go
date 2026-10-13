@@ -45,6 +45,10 @@ func TestDismissedThreads(t *testing.T) {
 	resolvedByBot.Resolved = true
 	resolvedByBot.ResolvedBy = &Author{Username: "review-bot"}
 
+	resolvedByAuthor := botNote(8, "ab", 17)
+	resolvedByAuthor.Resolved = true
+	resolvedByAuthor.ResolvedBy = &Author{Username: "mr-author"}
+
 	discussions := []Discussion{
 		{ID: "reviewer-replied", Notes: []Note{botNote(1, "aa", 10), reply("reviewer", 90)}},
 		{ID: "untouched", Notes: []Note{botNote(2, "bb", 11)}},
@@ -52,6 +56,7 @@ func TestDismissedThreads(t *testing.T) {
 		{ID: "resolved-bot", Notes: []Note{resolvedByBot}},
 		{ID: "system-only", Notes: []Note{botNote(5, "ee", 14), system}},
 		{ID: "author-only", Notes: []Note{botNote(6, "ff", 15), reply("mr-author", 92)}},
+		{ID: "resolved-author", Notes: []Note{resolvedByAuthor}},
 		{ID: "forged", Notes: []Note{noteBy("mr-author", 7, "99", 16), reply("someone", 93)}},
 	}
 
@@ -60,8 +65,8 @@ func TestDismissedThreads(t *testing.T) {
 	for _, d := range got {
 		byFP[d.finding.Fingerprint] = d.finding
 	}
-	if len(byFP) != 3 {
-		t.Fatalf("dismissed fingerprints = %v, want aa, cc and ff only", byFP)
+	if len(byFP) != 4 {
+		t.Fatalf("dismissed fingerprints = %v, want aa, ab, cc and ff only", byFP)
 	}
 	if _, forged := byFP["99"]; forged {
 		t.Error("a marker forged by a non-bot account must be ignored")
@@ -69,8 +74,17 @@ func TestDismissedThreads(t *testing.T) {
 	if byFP["aa"].AuthorOnly || byFP["cc"].AuthorOnly {
 		t.Error("engagement by a non-author must not be flagged AuthorOnly")
 	}
+	if !byFP["ab"].AuthorOnly || byFP["ab"].Resolved {
+		t.Errorf("a resolution by the MR author alone is AuthorOnly and not Resolved: %+v", byFP["ab"])
+	}
 	if !byFP["ff"].AuthorOnly {
 		t.Error("engagement by the MR author alone must be flagged AuthorOnly")
+	}
+	if byFP["aa"].Resolved || !byFP["cc"].Resolved || byFP["ff"].Resolved {
+		t.Errorf("Resolved must be set only for a resolution by a non-author person: aa=%v cc=%v ff=%v", byFP["aa"].Resolved, byFP["cc"].Resolved, byFP["ff"].Resolved)
+	}
+	if byFP["aa"].NoteID != 1 || byFP["cc"].NoteID != 3 || byFP["ff"].NoteID != 6 {
+		t.Errorf("NoteID must be the first note of the thread: aa=%d cc=%d ff=%d", byFP["aa"].NoteID, byFP["cc"].NoteID, byFP["ff"].NoteID)
 	}
 	if a := byFP["aa"]; a.Path != "main.go" || a.Line != 10 || a.Anchor != "aaa" || a.AnchorLines != 1 {
 		t.Errorf("unexpected finding: %+v", a)
@@ -185,3 +199,85 @@ func TestDismissedThreads_RemovedLine(t *testing.T) {
 	}
 }
 
+
+func TestResolvePreviousReviews_LeavesKeptDismissedThreadsAlone(t *testing.T) {
+	dismissed := botNote(1, "aa", 10)
+	stale := botNote(2, "bb", 11)
+	untouched := botNote(3, "cc", 12)
+	discussions := []Discussion{
+		{ID: "d1", Notes: []Note{dismissed, reply("reviewer", 9)}},
+		{ID: "d2", Notes: []Note{stale, reply("reviewer", 10)}},
+		{ID: "d3", Notes: []Note{untouched}},
+	}
+
+	for _, changed := range [][]string{nil, {"main.go"}} {
+		var resolved []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p := r.URL.Path
+			switch {
+			case r.Method == http.MethodPut:
+				resolved = append(resolved, p[strings.LastIndex(p, "/")+1:])
+				_, _ = w.Write([]byte(`{}`))
+			case strings.HasSuffix(p, "/api/v4/user"):
+				_, _ = w.Write([]byte(`{"username":"review-bot"}`))
+			case strings.HasSuffix(p, "/discussions"):
+				_ = json.NewEncoder(w).Encode(discussions)
+			case strings.Contains(p, "/merge_requests/7"):
+				_, _ = w.Write([]byte(`{"author":{"username":"mr-author"}}`))
+			default:
+				t.Errorf("unexpected request %s %s", r.Method, p)
+			}
+		}))
+		c := NewClient(srv.URL, "tok")
+
+		// Only "aa" is still anchored to unchanged code and matched this run.
+		if _, err := c.resolvePreviousReviews(context.Background(), "proj", "7", changed, []string{"aa"}); err != nil {
+			t.Fatalf("resolvePreviousReviews(%v): %v", changed, err)
+		}
+		srv.Close()
+		if got := fmt.Sprint(resolved); got != "[d2 d3]" {
+			t.Errorf("changedFiles=%v: resolved %v, want d2 and d3 only; the kept thread must stay as the person left it", changed, resolved)
+		}
+	}
+}
+
+func TestSubmitReview_ResolveModePassesKeepFingerprints(t *testing.T) {
+	dismissed := botNote(1, "aa", 10)
+	discussions := []Discussion{{ID: "d1", Notes: []Note{dismissed, reply("reviewer", 9)}}}
+	var resolved []string
+	listed := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		switch {
+		case r.Method == http.MethodPut && strings.Contains(p, "/discussions/"):
+			resolved = append(resolved, p)
+			_, _ = w.Write([]byte(`{}`))
+		case strings.HasSuffix(p, "/api/v4/user"):
+			_, _ = w.Write([]byte(`{"username":"review-bot"}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(p, "/discussions"):
+			listed++
+			_ = json.NewEncoder(w).Encode(discussions)
+		case r.Method == http.MethodGet && strings.HasSuffix(p, "/draft_notes"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.HasSuffix(p, "/draft_notes") || strings.Contains(p, "/draft_notes/"):
+			_, _ = w.Write([]byte(`{"id":1}`))
+		case strings.HasSuffix(p, "/notes") && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{}`))
+		case strings.Contains(p, "/merge_requests/7"):
+			_, _ = w.Write([]byte(`{"author":{"username":"mr-author"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	req := vcs.SubmitReviewRequest{Summary: "s", CleanupMode: "resolve", KeepFingerprints: []string{"aa"}}
+	if err := NewClient(srv.URL, "tok").SubmitReview(context.Background(), "proj", "7", req); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	// Cleanup only logs a failed listing, so without this a broken request would pass vacuously.
+	if listed == 0 {
+		t.Fatal("resolve cleanup never listed the discussions")
+	}
+	if len(resolved) != 0 {
+		t.Errorf("resolve mode resolved %v, want the kept dismissed thread left alone", resolved)
+	}
+}

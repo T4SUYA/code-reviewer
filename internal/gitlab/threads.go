@@ -44,7 +44,8 @@ func dismissedThreads(discussions []Discussion, botMarker, botUser, mrAuthor str
 				participants[n.Author.Username] = true
 			}
 		}
-		if first.Resolved && first.ResolvedBy != nil && first.ResolvedBy.Username != botUser {
+		resolvedByPerson := first.Resolved && first.ResolvedBy != nil && first.ResolvedBy.Username != botUser
+		if resolvedByPerson {
 			participants[first.ResolvedBy.Username] = true
 		}
 		if len(participants) == 0 {
@@ -66,6 +67,7 @@ func dismissedThreads(discussions []Discussion, botMarker, botUser, mrAuthor str
 		out = append(out, dismissedThread{
 			noteID: first.ID,
 			finding: vcs.DismissedFinding{
+				NoteID:      first.ID,
 				Fingerprint: fp.Fingerprint,
 				Anchor:      fp.Anchor,
 				AnchorLines: fp.AnchorLines,
@@ -73,6 +75,7 @@ func dismissedThreads(discussions []Discussion, botMarker, botUser, mrAuthor str
 				Line:        line,
 				OldSide:     oldSide,
 				AuthorOnly:  authorOnly || mrAuthor == "",
+				Resolved:    resolvedByPerson && first.ResolvedBy.Username != mrAuthor && mrAuthor != "",
 			},
 		})
 	}

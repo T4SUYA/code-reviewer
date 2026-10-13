@@ -12,6 +12,7 @@ import (
 // DismissedFinding describes a finding posted by this tool whose review
 // thread other people have resolved or replied to.
 type DismissedFinding struct {
+	NoteID      int    // ID of the thread's first (tool-written) note or comment.
 	Fingerprint string // Finding fingerprint embedded in the original comment.
 	Anchor      string // Hash of the anchored lines (and neighbours) at post time.
 	AnchorLines int    // Number of lines the anchor spans.
@@ -23,6 +24,18 @@ type DismissedFinding struct {
 	// the merge/pull request author. Such a dismissal must not silence
 	// high-severity findings, since the author is the party being reviewed.
 	AuthorOnly bool
+
+	// Resolved is true when the thread was resolved by someone other than the
+	// tool and the merge/pull request author, as opposed to merely replied to.
+	// Clients that cannot read thread resolution leave it false.
+	Resolved bool
+}
+
+// SilencesHighSeverity reports whether the dismissal may suppress a HIGH or
+// CRITICAL finding. A dismissal by the author alone never may; with
+// resolveOnly, a reply is not enough either.
+func (d DismissedFinding) SilencesHighSeverity(resolveOnly bool) bool {
+	return !d.AuthorOnly && (!resolveOnly || d.Resolved)
 }
 
 // ThreadReader is implemented by clients that can report which of the tool's
