@@ -43,6 +43,9 @@ func (p *Provider) OmitTemperature() { p.omitTemp = true }
 // unrecognized level leaves requests without one.
 func (p *Provider) SetThinkingLevel(level string) { p.thinking = ThinkingConfigFor(level) }
 
+// ThinkingConfig returns the thinking config sent with requests, or nil when none is.
+func (p *Provider) ThinkingConfig() *genai.ThinkingConfig { return p.thinking }
+
 // ThinkingConfigFor returns the ThinkingConfig for a thinking level, or nil
 // when level is empty or not one of minimal, low, medium, high. The level is
 // passed through as given; the model decides whether it accepts it.

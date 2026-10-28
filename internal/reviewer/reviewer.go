@@ -74,6 +74,18 @@ func NewWithDiffSource(cfg *config.Config, provider ModelReviewer, glClient vcs.
 	}
 }
 
+// agentConfig builds the agent loop configuration from the review settings.
+func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
+	return AgentConfig{
+		MaxIterations:   r.cfg.AgentMaxIterations,
+		RemainingBudget: remainingBudget,
+		Timeout:         r.cfg.AgentTimeout,
+		RepoRoot:        findRepoRoot(),
+		OmitTemperature: r.cfg.DisableTemperature,
+		ThinkingLevel:   r.cfg.ThinkingLevel,
+	}
+}
+
 // SetChatter sets the multi-turn chat provider for agent loop support.
 // If not set, the agent loop is skipped even when --agent is enabled.
 func (r *Reviewer) SetChatter(c Chatter) {
@@ -549,14 +561,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			}
 		}
 		{
-			agentCfg := AgentConfig{
-				MaxIterations:   r.cfg.AgentMaxIterations,
-				RemainingBudget: remainingBudget,
-				Timeout:         r.cfg.AgentTimeout,
-				RepoRoot:        findRepoRoot(),
-				OmitTemperature: r.cfg.DisableTemperature,
-				ThinkingLevel:   r.cfg.ThinkingLevel,
-			}
+			agentCfg := r.agentConfig(remainingBudget)
 			scoped, agentResult, err := runScopedAgentLoop(ctx, r.chatter, agentCfg, allFindings, r.cfg.AgentScope)
 			// Always aggregate usage, even on error (agent preserves accumulated tokens).
 			if agentResult != nil {

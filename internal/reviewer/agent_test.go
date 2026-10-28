@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/OpticDiff/code-reviewer/internal/config"
 	"github.com/OpticDiff/code-reviewer/pkg/model"
 	"google.golang.org/genai"
 )
@@ -530,5 +531,26 @@ func TestRunAgentLoop_LastTurnCannotCallTools(t *testing.T) {
 	}
 	if strings.Contains(chatter.histories[1][len(chatter.histories[1])-1].Parts[0].Text, "last turn") {
 		t.Error("the notice must not be sent before the final turn")
+	}
+}
+
+// TestReviewer_AgentConfigCarriesRequestSettings checks the review settings
+// that the agent loop must repeat on its own requests.
+func TestReviewer_AgentConfigCarriesRequestSettings(t *testing.T) {
+	r := &Reviewer{cfg: &config.Config{ThinkingLevel: "medium", DisableTemperature: true, AgentMaxIterations: 4}}
+	got := r.agentConfig(1234)
+	if got.ThinkingLevel != "medium" {
+		t.Errorf("ThinkingLevel = %q, want medium", got.ThinkingLevel)
+	}
+	if !got.OmitTemperature {
+		t.Error("OmitTemperature = false, want true")
+	}
+	if got.RemainingBudget != 1234 || got.MaxIterations != 4 {
+		t.Errorf("RemainingBudget, MaxIterations = %d, %d; want 1234, 4", got.RemainingBudget, got.MaxIterations)
+	}
+
+	r = &Reviewer{cfg: &config.Config{}}
+	if got := r.agentConfig(1); got.ThinkingLevel != "" {
+		t.Errorf("unset ThinkingLevel = %q, want empty", got.ThinkingLevel)
 	}
 }

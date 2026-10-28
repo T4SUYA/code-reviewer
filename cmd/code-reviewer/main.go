@@ -90,6 +90,24 @@ func main() {
 	os.Exit(exitCode)
 }
 
+// vertexProviderOptions returns the request settings every Vertex AI provider
+// (single model or each consensus model) receives from the configuration.
+func vertexProviderOptions(cfg *config.Config) []func(*model.Provider) {
+	var opts []func(*model.Provider)
+	if cfg.Temperature != nil {
+		t := float32(*cfg.Temperature)
+		opts = append(opts, func(p *model.Provider) { p.SetTemperature(t) })
+	}
+	if cfg.DisableTemperature {
+		opts = append(opts, (*model.Provider).OmitTemperature)
+	}
+	if cfg.ThinkingLevel != "" {
+		level := cfg.ThinkingLevel
+		opts = append(opts, func(p *model.Provider) { p.SetThinkingLevel(level) })
+	}
+	return opts
+}
+
 func run(ctx, initCtx context.Context) (int, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -156,19 +174,7 @@ func run(ctx, initCtx context.Context) (int, error) {
 			}
 			modelProvider = model.NewMultiProviderFromReviewers(providers, threshold)
 		} else {
-			var opts []func(*model.Provider)
-			if cfg.Temperature != nil {
-				t := float32(*cfg.Temperature)
-				opts = append(opts, func(p *model.Provider) { p.SetTemperature(t) })
-			}
-			if cfg.DisableTemperature {
-				opts = append(opts, (*model.Provider).OmitTemperature)
-			}
-			if cfg.ThinkingLevel != "" {
-				level := cfg.ThinkingLevel
-				opts = append(opts, func(p *model.Provider) { p.SetThinkingLevel(level) })
-			}
-			mp, err := model.NewMultiProvider(initCtx, cfg.GCPProject, cfg.GCPLocation, cfg.Models, threshold, cfg.ProxyURL, opts...)
+			mp, err := model.NewMultiProvider(initCtx, cfg.GCPProject, cfg.GCPLocation, cfg.Models, threshold, cfg.ProxyURL, vertexProviderOptions(cfg)...)
 			if err != nil {
 				return 0, wrapProviderError(err)
 			}
@@ -193,13 +199,9 @@ func run(ctx, initCtx context.Context) (int, error) {
 		if err != nil {
 			return 0, wrapProviderError(err)
 		}
-		if cfg.Temperature != nil {
-			provider.SetTemperature(float32(*cfg.Temperature))
+		for _, opt := range vertexProviderOptions(cfg) {
+			opt(provider)
 		}
-		if cfg.DisableTemperature {
-			provider.OmitTemperature()
-		}
-		provider.SetThinkingLevel(cfg.ThinkingLevel)
 		modelProvider = provider
 	}
 	defer modelProvider.Close()
