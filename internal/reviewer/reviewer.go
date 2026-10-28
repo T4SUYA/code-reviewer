@@ -410,12 +410,14 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		}
 	}
 
-	// Pass 1: Intent inference (if enabled).
+	// Pass 1: Intent inference (if enabled). It judges the change as a whole, so
+	// it is given every file in scope, including those whose findings came from
+	// the cache and were taken out of diffs above.
 	var intentContext string
 	var intentSummary *model.SummaryResult
 	if r.cfg.IntentReview && len(diffs) > 0 {
 		if sp, ok := r.provider.(model.SummarizeProvider); ok {
-			fullDiff := buildNumberedDiff(diffs)
+			fullDiff := buildNumberedDiff(auditDiffs)
 			sysPrompt := model.BuildSummaryPrompt()
 			uPrompt := model.BuildSummaryUserPrompt(mrTitle, mrDesc, fullDiff)
 			summaryResult, serr := sp.Summarize(ctx, sysPrompt, uPrompt)
