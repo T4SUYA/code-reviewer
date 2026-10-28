@@ -121,6 +121,10 @@ func run(ctx, initCtx context.Context) (int, error) {
 		}
 	}
 
+	if cfg.ThinkingLevel != "" && cfg.APIURL != "" {
+		slog.Warn("thinking level is not sent to --api-url endpoints; ignoring", "thinking_level", cfg.ThinkingLevel)
+	}
+
 	if len(cfg.Models) > 1 {
 		// Multi-model consensus mode.
 		threshold := cfg.ConsensusThreshold
@@ -160,6 +164,10 @@ func run(ctx, initCtx context.Context) (int, error) {
 			if cfg.DisableTemperature {
 				opts = append(opts, (*model.Provider).OmitTemperature)
 			}
+			if cfg.ThinkingLevel != "" {
+				level := cfg.ThinkingLevel
+				opts = append(opts, func(p *model.Provider) { p.SetThinkingLevel(level) })
+			}
 			mp, err := model.NewMultiProvider(initCtx, cfg.GCPProject, cfg.GCPLocation, cfg.Models, threshold, cfg.ProxyURL, opts...)
 			if err != nil {
 				return 0, wrapProviderError(err)
@@ -191,6 +199,7 @@ func run(ctx, initCtx context.Context) (int, error) {
 		if cfg.DisableTemperature {
 			provider.OmitTemperature()
 		}
+		provider.SetThinkingLevel(cfg.ThinkingLevel)
 		modelProvider = provider
 	}
 	defer modelProvider.Close()
