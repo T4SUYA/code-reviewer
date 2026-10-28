@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- The intent pass is given every changed file when the per-file review cache serves some of them. It used to see only the files that still needed a review, so a later push could draw "missing test coverage" or "outside the stated scope" findings against a change that, taken whole, has its tests and is in scope.
+
 ## [0.27.0] — 2026-10-15
 
 ### Added
