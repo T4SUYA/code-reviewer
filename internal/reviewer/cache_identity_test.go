@@ -2,6 +2,7 @@ package reviewer
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,41 @@ func TestRun_CacheReplayDependsOnEffectiveThinkingLevel(t *testing.T) {
 			}
 			if mm.calls != tt.wantCalls {
 				t.Errorf("model calls = %d, want %d", mm.calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// The configured prompt profile and confidence floor both reach the system
+// prompt sent to the model.
+func TestRun_PromptProfileAndFloorReachSystemPrompt(t *testing.T) {
+	tests := []struct {
+		profile string
+		want    string
+	}{
+		{"", "When in doubt, DO NOT flag it"},
+		{"balanced", "even if it is not certain"},
+		{"recall", "Investigate every suspicious pattern"},
+	}
+	for _, tt := range tests {
+		t.Run("profile="+tt.profile, func(t *testing.T) {
+			cfg := config.Config{
+				Model:           "test-model",
+				PromptProfile:   tt.profile,
+				ConfidenceFloor: 55,
+				ChunkStrategy:   config.ChunkStrategyFail,
+				MinSeverity:     config.SeverityLow,
+			}
+			mm := &mockModel{result: &model.ReviewResult{Summary: "ok"}}
+			r := NewWithDiffSource(&cfg, mm, &mockVCS{}, &mockDiffSource{diffs: makeTestDiffs("file1.go")})
+			if _, err := r.Run(context.Background()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(mm.lastSystemPrompt, tt.want) {
+				t.Errorf("system prompt missing %q", tt.want)
+			}
+			if !strings.Contains(mm.lastSystemPrompt, "confidence below 55%, omit the finding") {
+				t.Error("confidence floor not applied")
 			}
 		})
 	}
