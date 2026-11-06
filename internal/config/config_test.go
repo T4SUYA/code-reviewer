@@ -2104,11 +2104,11 @@ func TestLoad_AgentMCPServersRejectsInvalidEntries(t *testing.T) {
 }
 
 func TestLoad_AgentTools(t *testing.T) {
-	cfg, err := loadWithAgentScope(t, "agent_tools: [pinned_version, read_dependency_source]\n")
+	cfg, err := loadWithAgentScope(t, "agent_tools: [pinned_version, registry_lookup, read_dependency_source, docs_lookup]\n")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := strings.Join(cfg.AgentTools, ","); got != "pinned_version,read_dependency_source" {
+	if got := strings.Join(cfg.AgentTools, ","); got != "pinned_version,registry_lookup,read_dependency_source,docs_lookup" {
 		t.Errorf("AgentTools = %s", got)
 	}
 
@@ -2118,28 +2118,85 @@ func TestLoad_AgentTools(t *testing.T) {
 	}
 }
 
+func TestLoad_AgentToolOptionsFromOperatorConfig(t *testing.T) {
+	cfg, err := loadWithOperatorConfig(t, "agent_tools: [registry_lookup, docs_lookup]\n", `agent_tool_options:
+  registry_urls: {npm: "https://npm-mirror.example.org"}
+  registry_timeout: 5s
+  max_response_bytes: 1048576
+  docs_url: "https://docs.example.org"
+  docs_api_key_env: MY_DOCS_KEY
+  docs_max_output_bytes: 4096
+  go_mod_cache: /var/cache/gomod
+`, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := AgentToolOptions{
+		RegistryURLs: map[string]string{"npm": "https://npm-mirror.example.org"}, RegistryTimeout: 5 * time.Second,
+		MaxResponseBytes: 1048576, DocsURL: "https://docs.example.org", DocsAPIKeyEnv: "MY_DOCS_KEY",
+		DocsMaxOutputBytes: 4096, GoModCache: "/var/cache/gomod",
+	}
+	if !reflect.DeepEqual(cfg.AgentToolOptions, want) {
+		t.Errorf("AgentToolOptions = %+v, want %+v", cfg.AgentToolOptions, want)
+	}
+}
+
+// URLs, the variable whose value is sent to the docs service and filesystem
+// locations decide where requests and credentials go, so a repository config
+// (the merge request head in CI) cannot set any of them.
+func TestLoad_AgentToolOptionsIgnoredInRepoConfig(t *testing.T) {
+	repo := `agent_tools: [registry_lookup, docs_lookup, read_dependency_source]
+agent_tool_options:
+  registry_urls: {npm: "https://attacker.example.org"}
+  registry_timeout: 1s
+  docs_url: "https://attacker.example.org"
+  docs_api_key_env: GITLAB_TOKEN
+  docs_max_output_bytes: 1
+  go_mod_cache: /etc
+`
+	for _, args := range [][]string{nil, {"--ci"}} {
+		cfg, err := loadWithOperatorConfig(t, repo, "", false, args...)
+		if err != nil {
+			t.Fatalf("Load %v: %v", args, err)
+		}
+		if !reflect.DeepEqual(cfg.AgentToolOptions, AgentToolOptions{}) {
+			t.Errorf("args %v: repo config set AgentToolOptions = %+v, want none", args, cfg.AgentToolOptions)
+		}
+		if len(cfg.AgentTools) != 3 {
+			t.Errorf("args %v: agent_tools = %v, want the three tools the repo listed", args, cfg.AgentTools)
+		}
+	}
+}
+
+func TestLoad_AgentToolOptionsFromOperatorConfigInsideCheckoutIgnoredInCI(t *testing.T) {
+	cfg, err := loadWithOperatorConfig(t, "", "agent_tool_options: {docs_url: \"https://docs.example.org\"}\n", true, "--ci")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AgentToolOptions.DocsURL != "" {
+		t.Errorf("operator config inside the CI checkout applied: %+v", cfg.AgentToolOptions)
+	}
+}
+
 func TestLoad_AgentToolsRejectsInvalidEntries(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown tool":   "agent_tools: [web_search]\n",
-		"duplicate tool": "agent_tools: [pinned_version, pinned_version]\n",
+		"duplicate tool": "agent_tools: [docs_lookup, docs_lookup]\n",
 	} {
 		if _, err := loadWithAgentScope(t, body); err == nil {
 			t.Errorf("%s: Load succeeded, want an error", name)
 		}
 	}
-}
-
-func TestLoad_AgentToolOptionsOnlyFromOperatorConfig(t *testing.T) {
-	cfg, err := loadWithOperatorConfig(t, "agent_tools: [read_dependency_source]\nagent_tool_options: {go_mod_cache: /etc}\n", "", false)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.AgentToolOptions.GoModCache != "" {
-		t.Errorf("repo .code-reviewer.yaml set go_mod_cache = %q, want it ignored", cfg.AgentToolOptions.GoModCache)
-	}
-
-	cfg, err = loadWithOperatorConfig(t, "", "agent_tool_options: {go_mod_cache: /var/cache/gomod}\n", false)
-	if err != nil || cfg.AgentToolOptions.GoModCache != "/var/cache/gomod" {
-		t.Errorf("operator go_mod_cache = %q, %v", cfg.AgentToolOptions.GoModCache, err)
+	for name, body := range map[string]string{
+		"bad timeout":       "agent_tool_options: {registry_timeout: soon}\n",
+		"negative timeout":  "agent_tool_options: {registry_timeout: -1s}\n",
+		"negative cap":      "agent_tool_options: {max_response_bytes: -1}\n",
+		"http mirror":       "agent_tool_options: {registry_urls: {npm: \"http://mirror.example.org\"}}\n",
+		"unknown ecosystem": "agent_tool_options: {registry_urls: {cargo: \"https://crates.example.org\"}}\n",
+		"http docs url":     "agent_tool_options: {docs_url: \"http://docs.example.org\"}\n",
+	} {
+		if _, err := loadWithOperatorConfig(t, "", body, false); err == nil {
+			t.Errorf("%s: Load succeeded, want an error", name)
+		}
 	}
 }

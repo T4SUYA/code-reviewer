@@ -69,7 +69,7 @@ type AgentConfig struct {
 	ExtraTools      []Tool             // Tools registered after the built-in repository tools.
 	MCPServers      []mcp.ServerConfig // MCP servers whose allowlisted tools register as "<server>.<tool>".
 	// DependencyTools names the dependency tools to register (pinned_version,
-	// read_dependency_source). Empty registers none.
+	// registry_lookup, read_dependency_source, docs_lookup). Empty registers none.
 	DependencyTools       []string
 	DependencyToolOptions deptools.Options // Options of the dependency tools; RepoRoot is filled from this config.
 }

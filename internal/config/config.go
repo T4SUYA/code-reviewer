@@ -220,8 +220,8 @@ type Config struct {
 	AgentMaxIterations int              // Max refinement iterations (default 3).
 	AgentTimeout       time.Duration    // Wall-clock timeout for agent loop (default 3m).
 	AgentMCPServers    []AgentMCPServer // MCP servers whose tools the agent loop may call (default none); operator config only.
-	AgentTools         []string         // Dependency tools the agent loop may call: pinned_version, read_dependency_source (default none).
-	AgentToolOptions   AgentToolOptions // Locations the dependency tools read; operator config only.
+	AgentTools         []string         // Dependency tools the agent loop may call: pinned_version, registry_lookup, read_dependency_source, docs_lookup (default none).
+	AgentToolOptions   AgentToolOptions // Mirrors, docs URL and key variable, timeouts, caps and cache location of the dependency tools; operator config only.
 	OperatorConfig     string           // Path of the operator-trusted config file (--operator-config).
 	AgentScope         string           // Findings the agent loop examines: "all" (default) or "high_severity_only".
 
