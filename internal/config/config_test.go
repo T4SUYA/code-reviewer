@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"testing/quick"
 )
 
@@ -1924,6 +1925,50 @@ func TestParseThinkingLevel(t *testing.T) {
 	for _, bad := range []string{"", "none", "max", "0"} {
 		if _, err := ParseThinkingLevel(bad); err == nil {
 			t.Errorf("ParseThinkingLevel(%q) succeeded, want error", bad)
+		}
+	}
+}
+
+func TestLoad_AgentMCPServers(t *testing.T) {
+	cfg, err := loadWithAgentScope(t, `agent_mcp_servers:
+  - name: docs
+    command: docs-mcp
+    args: ["--stdio"]
+    env_allowlist: [DOCS_API_KEY]
+    tools_allowlist: [lookup]
+    call_timeout: 10s
+    max_output_bytes: 4096
+`)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := AgentMCPServer{
+		Name: "docs", Command: "docs-mcp", Args: []string{"--stdio"},
+		EnvAllowlist: []string{"DOCS_API_KEY"}, ToolsAllowlist: []string{"lookup"},
+		CallTimeout: 10 * time.Second, MaxOutputBytes: 4096,
+	}
+	if len(cfg.AgentMCPServers) != 1 || !reflect.DeepEqual(cfg.AgentMCPServers[0], want) {
+		t.Errorf("AgentMCPServers = %+v, want [%+v]", cfg.AgentMCPServers, want)
+	}
+
+	cfg, err = loadWithAgentScope(t, "agent_scope: all\n")
+	if err != nil || len(cfg.AgentMCPServers) != 0 {
+		t.Errorf("no agent_mcp_servers: got %+v, %v; want none (off by default)", cfg.AgentMCPServers, err)
+	}
+}
+
+func TestLoad_AgentMCPServersRejectsInvalidEntries(t *testing.T) {
+	for name, body := range map[string]string{
+		"no command":      "agent_mcp_servers:\n  - name: docs\n",
+		"dotted name":     "agent_mcp_servers:\n  - name: do.cs\n    command: x\n",
+		"empty name":      "agent_mcp_servers:\n  - command: x\n",
+		"duplicate name":  "agent_mcp_servers:\n  - {name: docs, command: x}\n  - {name: docs, command: y}\n",
+		"bad timeout":     "agent_mcp_servers:\n  - {name: docs, command: x, call_timeout: soon}\n",
+		"negative timout": "agent_mcp_servers:\n  - {name: docs, command: x, call_timeout: -1s}\n",
+		"negative cap":    "agent_mcp_servers:\n  - {name: docs, command: x, max_output_bytes: -1}\n",
+	} {
+		if _, err := loadWithAgentScope(t, body); err == nil {
+			t.Errorf("%s: Load succeeded, want an error", name)
 		}
 	}
 }
