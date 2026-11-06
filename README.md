@@ -557,7 +557,7 @@ Rules for who may dismiss:
 
 ### Learnings from Past Dismissals
 
-Dismissed findings above are matched by fingerprint on one merge/pull request. To carry what a team already decided into later reviews, point `learnings` (`--learnings`, `REVIEW_LEARNINGS`, action input `learnings`) at a YAML or JSON file of past dismissals. Other review tools describe the same idea: [CodeRabbit learnings](https://docs.coderabbit.ai/knowledge-base/learnings) and [Greptile training](https://www.greptile.com/docs/code-review/training-the-learning-system) both feed reviewer feedback back into later reviews. Here the file is explicit and version-controlled, and it only adds prompt context; it does not suppress findings itself, and it does not change `dismissal_mode`.
+Dismissed findings above are matched by fingerprint on one merge/pull request. To carry what a team already decided into later reviews, point `learnings` (`--learnings`, `REVIEW_LEARNINGS`, action input `learnings`) at a YAML or JSON file of past dismissals. The file is explicit and version-controlled. It only adds prompt context: it does not suppress findings itself, and it does not change `dismissal_mode`.
 
 ```yaml
 # .review/learnings.yaml - oldest entries first
@@ -571,9 +571,11 @@ Dismissed findings above are matched by fingerprint on one merge/pull request. T
   kind: declined
 ```
 
-`title` and `reason` are required. A top-level list or a mapping with an `entries` list both work, as does JSON. A malformed file stops the run with a configuration error that names the entry.
+`title` and `reason` are required. A top-level list or a mapping with an `entries` list both work, as does JSON. `path_glob` accepts `**` patterns. Unknown fields, duplicate keys and malformed globs are rejected. A malformed file stops the run with a configuration error that names the entry; the file is checked at startup, before the model provider and the platform client are created.
 
-When any entry applies to the changed files, the system prompt gains a section titled "Previously dismissed findings in this repository" that asks the model not to raise them again unless the code now differs materially. The section is bounded: at most 20 entries and 4,000 characters of entry text; when either limit is reached the oldest entries (earliest in the file) are dropped, and the same input always renders the same section. Entry text is collapsed to one quoted line, capped per field, and introduced as recorded history, not instructions. A file is limited to 256 KiB and 500 entries. The rendered section is part of the review cache key, so changing an applicable entry re-reviews cached diffs, while a run without `learnings` builds exactly the prompt and cache keys it did before.
+When any entry applies to the changed files, the system prompt gains a section titled "Previously dismissed findings in this repository" that asks the model not to raise them again unless the code now differs materially. The section is bounded: at most 20 entries and 4,000 characters (Unicode characters, not bytes) of entry text; when either limit is reached the oldest entries (earliest in the file) are dropped, and an entry that alone exceeds the character limit is skipped without dropping the older ones. The same input always renders the same section. Entry text is collapsed to one quoted line, capped per field, and introduced as recorded history, not instructions. A file is limited to 256 KiB and 500 entries. Entries are selected against all files changed in the review, not per file, so the section is the same for every file of a run and is part of every file's cache key: changing an entry that applies to any changed file re-reviews all cached diffs, while a run without `learnings` builds exactly the prompt and cache keys it did before.
+
+Trust boundary: in CI mode, a learnings file inside the repository checkout is read from the trusted base/target ref (the same ref REVIEW.md is read from), so a change under review cannot edit its own learnings; a file that does not exist at that ref contributes no entries, and a run without a known base ref ignores the in-checkout file. A path outside the checkout, such as an absolute path supplied by the operator, is read as-is. Outside CI mode the file is read from the working tree.
 
 #### Suppressed findings in the audit log
 

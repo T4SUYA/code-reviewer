@@ -349,7 +349,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `context_files` | `--context-files` | `REVIEW_CONTEXT_FILES` | — | Directory-scoped guidance files (e.g. `AGENTS.md`), read from the base ref |
 | `temperature` | `--temperature` | `REVIEW_TEMPERATURE` | — | Sampling temperature (0-2); unset keeps the built-in 0.2 |
 | `thinking_level` | `--thinking-level` | `REVIEW_THINKING_LEVEL` | — | `minimal`, `low`, `medium` or `high`; sent as the thinking config of Vertex AI generation requests (ignored with `api_url`); unset sends none |
-| `learnings` | `--learnings` | `REVIEW_LEARNINGS` | — | Path to a YAML/JSON file of previously dismissed findings added to the prompt as context (max 20 entries / 4,000 characters per prompt); part of the cache key |
+| `learnings` | `--learnings` | `REVIEW_LEARNINGS` | — | Path to a YAML/JSON file of previously dismissed findings added to the prompt as context (max 20 entries / 4,000 characters per prompt); in CI an in-checkout file is read from the base ref; part of every file's cache key |
 | `use_temperature` | `--use-temperature` | `REVIEW_USE_TEMPERATURE` | `true` | `false` sends no temperature on any model call (the model's default applies); conflicts with `temperature` |
 | `extra_rules` | `--extra-rules` | `REVIEW_EXTRA_RULES` | — | Additional prompt rules (free text) |
 | `custom_prompt` | `--custom-prompt` | `REVIEW_CUSTOM_PROMPT` | — | Path to custom system prompt file |
