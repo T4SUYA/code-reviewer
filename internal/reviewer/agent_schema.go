@@ -10,32 +10,16 @@ import "google.golang.org/genai"
 // NONE do not prevent this; constrained decoding against a schema does.
 //
 // The root must be a bare AnyOf: the API rejects any other field beside it.
+// The tool branches come from the registry, one per registered tool.
 // Without withTools the tool branches are left out, which forces the final
 // turn to answer instead of asking for more context.
-func agentResponseSchema(withTools bool) *genai.Schema {
+func agentResponseSchema(tools *ToolRegistry, withTools bool) *genai.Schema {
 	str := &genai.Schema{Type: genai.TypeString}
 	num := &genai.Schema{Type: genai.TypeInteger}
 
-	toolBranch := func(name string, required []string, args map[string]*genai.Schema) *genai.Schema {
-		return &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"action": {Type: genai.TypeString, Enum: []string{"tool"}},
-				"tool":   {Type: genai.TypeString, Enum: []string{name}},
-				"args":   {Type: genai.TypeObject, Properties: args, Required: required},
-			},
-			Required:         []string{"action", "tool", "args"},
-			PropertyOrdering: []string{"action", "tool", "args"},
-		}
-	}
-
 	var branches []*genai.Schema
 	if withTools {
-		branches = append(branches,
-			toolBranch("read_file", []string{"path"}, map[string]*genai.Schema{"path": str, "start_line": num, "end_line": num}),
-			toolBranch("find_definition", []string{"symbol"}, map[string]*genai.Schema{"symbol": str}),
-			toolBranch("list_directory", []string{"path"}, map[string]*genai.Schema{"path": str}),
-		)
+		branches = tools.schemaBranches()
 	}
 	return &genai.Schema{AnyOf: append(branches,
 		&genai.Schema{

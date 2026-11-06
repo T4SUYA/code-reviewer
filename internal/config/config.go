@@ -219,6 +219,7 @@ type Config struct {
 	AgentLoop          bool          // Enable agent refinement loop.
 	AgentMaxIterations int           // Max refinement iterations (default 3).
 	AgentTimeout       time.Duration // Wall-clock timeout for agent loop (default 3m).
+	AgentMCPServers    []AgentMCPServer // MCP servers whose tools the agent loop may call (default none).
 	AgentScope         string        // Findings the agent loop examines: "all" (default) or "high_severity_only".
 
 	// Scope enforcement.
@@ -306,6 +307,7 @@ type repoConfig struct {
 	AgentMaxIterations       int      `yaml:"agent_max_iterations"`
 	AgentTimeout             string   `yaml:"agent_timeout"`
 	AgentScope               string   `yaml:"agent_scope"`
+	AgentMCPServers          []rawAgentMCPServer `yaml:"agent_mcp_servers"`
 
 	IntentChecks *model.IntentChecks `yaml:"intent_checks"`
 }
@@ -658,7 +660,14 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.AgentScope != "" {
 		c.AgentScope = rc.AgentScope
 	}
-	return nil
+	for _, raw := range rc.AgentMCPServers {
+		server, err := raw.parse()
+		if err != nil {
+			return err
+		}
+		c.AgentMCPServers = append(c.AgentMCPServers, server)
+	}
+	return validateAgentMCPServers(c.AgentMCPServers)
 }
 
 func (c *Config) loadEnv() {

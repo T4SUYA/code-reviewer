@@ -18,6 +18,7 @@ import (
 	"github.com/OpticDiff/code-reviewer/internal/config"
 	ctxpkg "github.com/OpticDiff/code-reviewer/internal/context"
 	"github.com/OpticDiff/code-reviewer/internal/diff"
+	"github.com/OpticDiff/code-reviewer/internal/mcp"
 	"github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/vcs"
 )
@@ -83,7 +84,17 @@ func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
 		RepoRoot:        findRepoRoot(),
 		OmitTemperature: r.cfg.DisableTemperature,
 		ThinkingLevel:   r.cfg.ThinkingLevel,
+		MCPServers:      mcpServerConfigs(r.cfg.AgentMCPServers),
 	}
+}
+
+// mcpServerConfigs converts the configured MCP servers for the agent loop.
+func mcpServerConfigs(servers []config.AgentMCPServer) []mcp.ServerConfig {
+	var out []mcp.ServerConfig
+	for _, s := range servers {
+		out = append(out, mcp.ServerConfig(s))
+	}
+	return out
 }
 
 // SetChatter sets the multi-turn chat provider for agent loop support.

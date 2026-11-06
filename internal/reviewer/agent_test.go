@@ -385,7 +385,7 @@ func TestRunAgentLoop_RequestsSchemaConstrainedJSON(t *testing.T) {
 // Every shape the loop accepts must be expressible in the schema, and every
 // schema branch must be something the loop can execute.
 func TestAgentResponseSchema_MatchesLoopProtocol(t *testing.T) {
-	schema := agentResponseSchema(true)
+	schema := agentResponseSchema(NewToolRegistry(""), true)
 
 	actions := map[string]bool{}
 	tools := map[string]bool{}

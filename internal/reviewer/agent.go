@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OpticDiff/code-reviewer/internal/mcp"
 	providermodel "github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/retry"
 	"github.com/OpticDiff/code-reviewer/pkg/model"
@@ -63,6 +64,8 @@ type AgentConfig struct {
 	RepoRoot        string        // Repository root for tool access.
 	OmitTemperature bool          // Send no temperature, leaving the model's own default (default false: 0.0).
 	ThinkingLevel   string        // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
+	ExtraTools      []Tool        // Tools registered after the built-in repository tools.
+	MCPServers      []mcp.ServerConfig // MCP servers whose allowlisted tools register as "<server>.<tool>".
 }
 
 // AgentResult holds the output of the agent refinement loop.
@@ -206,6 +209,14 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	defer cancel()
 
 	tools := NewToolRegistry(cfg.RepoRoot)
+	for _, t := range cfg.ExtraTools {
+		if err := tools.Register(t); err != nil {
+			return nil, fmt.Errorf("registering agent tool: %w", err)
+		}
+	}
+	if len(cfg.MCPServers) > 0 {
+		defer registerMCPTools(ctx, tools, cfg.MCPServers)()
+	}
 	result := &AgentResult{
 		Findings:   initialFindings,
 		ToolCalls:  make(map[string]int),
@@ -219,18 +230,18 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	}
 
 	// System instruction: pin initial findings (from ML review — don't rely on event history).
-	systemPrompt := buildRefinementSystemPrompt(string(findingsJSON))
+	systemPrompt := buildRefinementSystemPrompt(string(findingsJSON), tools.Prompt())
 	genConfig := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
 		ResponseMIMEType:  "application/json",
-		ResponseSchema:    agentResponseSchema(true),
+		ResponseSchema:    agentResponseSchema(tools, true),
 	}
 	if !cfg.OmitTemperature {
 		genConfig.Temperature = genai.Ptr(float32(0.0)) // Deterministic for refinement (ML review).
 	}
 	genConfig.ThinkingConfig = providermodel.ThinkingConfigFor(cfg.ThinkingLevel)
 	finalConfig := *genConfig
-	finalConfig.ResponseSchema = agentResponseSchema(false)
+	finalConfig.ResponseSchema = agentResponseSchema(tools, false)
 
 	// Build conversation history.
 	history := []*genai.Content{
@@ -393,7 +404,7 @@ func runScopedAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 // buildRefinementSystemPrompt constructs the system prompt with pinned findings
 // and tool schemas. Initial findings are in the system instruction so they
 // survive memory compression (from ML Systems review).
-func buildRefinementSystemPrompt(findingsJSON string) string {
+func buildRefinementSystemPrompt(findingsJSON, toolsPrompt string) string {
 	var sb strings.Builder
 	sb.WriteString("You are a code review refinement agent. Your job is to verify or dismiss initial findings.\n\n")
 	sb.WriteString("## Rules\n")
@@ -407,7 +418,7 @@ func buildRefinementSystemPrompt(findingsJSON string) string {
 	sb.WriteString("- To return refined findings: {\"action\": \"findings\", \"findings\": [<findings>]}\n")
 	sb.WriteString("- To finish without changes: {\"action\": \"done\"}\n\n")
 	sb.WriteString("## ")
-	sb.WriteString(ToolSchemas())
+	sb.WriteString(toolsPrompt)
 	sb.WriteString("\n\n")
 	sb.WriteString("## Initial Findings\n")
 	sb.WriteString("<initial_findings>\n")
