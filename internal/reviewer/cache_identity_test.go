@@ -110,6 +110,7 @@ func TestRun_PromptProfileAndFloorReachSystemPrompt(t *testing.T) {
 			cfg := config.Config{
 				Model:           "test-model",
 				PromptProfile:   tt.profile,
+				CacheDir:        t.TempDir(),
 				ConfidenceFloor: 55,
 				ChunkStrategy:   config.ChunkStrategyFail,
 				MinSeverity:     config.SeverityLow,
