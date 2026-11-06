@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -28,7 +27,7 @@ const (
 	MaxFileBytes     = 256 * 1024 // Largest learnings file that is read.
 	MaxEntries       = 500        // Most entries a learnings file may hold.
 	MaxPromptEntries = 20         // Most entries rendered into one prompt.
-	MaxPromptChars   = 4000       // Most characters of entry lines rendered into one prompt.
+	MaxPromptChars   = 4000       // Most characters (runes, not bytes) of entry lines rendered into one prompt.
 
 	maxTitleRunes  = 200
 	maxRuleRunes   = 100
@@ -75,7 +74,8 @@ func Load(path string) ([]Entry, error) {
 	return entries, nil
 }
 
-// Parse decodes and validates learnings from YAML or JSON bytes.
+// Parse decodes and validates learnings from YAML or JSON bytes. Unknown fields
+// and duplicate keys are rejected.
 func Parse(data []byte) ([]Entry, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
@@ -84,19 +84,18 @@ func Parse(data []byte) ([]Entry, error) {
 	if root.Kind == 0 {
 		return nil, nil
 	}
-	body := root.Content[0]
 
 	var entries []Entry
-	switch body.Kind {
+	switch root.Content[0].Kind {
 	case yaml.SequenceNode:
-		if err := decodeStrict(body, &entries); err != nil {
+		if err := decodeStrict(data, &entries); err != nil {
 			return nil, err
 		}
 	case yaml.MappingNode:
 		var wrapper struct {
 			Entries []Entry `yaml:"entries"`
 		}
-		if err := decodeStrict(body, &wrapper); err != nil {
+		if err := decodeStrict(data, &wrapper); err != nil {
 			return nil, err
 		}
 		entries = wrapper.Entries
@@ -115,13 +114,10 @@ func Parse(data []byte) ([]Entry, error) {
 	return entries, nil
 }
 
-// decodeStrict decodes node into out and rejects unknown fields.
-func decodeStrict(node *yaml.Node, out any) error {
-	raw, err := yaml.Marshal(node)
-	if err != nil {
-		return err
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
+// decodeStrict decodes data into out, rejecting unknown fields; the YAML
+// decoder itself rejects duplicate mapping keys.
+func decodeStrict(data []byte, out any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("invalid entries: %w", err)
@@ -141,8 +137,8 @@ func (e *Entry) validate() error {
 	default:
 		return fmt.Errorf("kind %q is invalid (valid: false_positive, declined)", e.Kind)
 	}
-	if e.PathGlob != "" && !strings.Contains(e.PathGlob, "**") {
-		if _, err := filepath.Match(e.PathGlob, ""); err != nil {
+	if e.PathGlob != "" {
+		if err := config.ValidatePathPattern(e.PathGlob); err != nil {
 			return fmt.Errorf("path_glob %q is invalid: %w", e.PathGlob, err)
 		}
 	}
@@ -166,7 +162,8 @@ func (e Entry) appliesTo(filePaths []string) bool {
 // FormatPrompt renders the entries that apply to filePaths as a prompt
 // section, or "" when none apply. Entries run oldest first, so when the count
 // or character cap is reached the oldest are dropped and the section keeps
-// their original order. The same input always yields the same section.
+// their original order. An entry whose line alone exceeds the character cap is
+// skipped; the older entries that still fit are kept. The same input always yields the same section.
 func FormatPrompt(entries []Entry, filePaths []string) string {
 	var applicable []Entry
 	for _, e := range entries {
@@ -178,10 +175,11 @@ func FormatPrompt(entries []Entry, filePaths []string) string {
 	chars := 0
 	for i := len(applicable) - 1; i >= 0 && len(kept) < MaxPromptEntries; i-- {
 		line := formatLine(applicable[i])
-		if chars+len(line) > MaxPromptChars {
-			break
+		lineChars := utf8.RuneCountInString(line)
+		if chars+lineChars > MaxPromptChars {
+			continue
 		}
-		chars += len(line)
+		chars += lineChars
 		kept = append(kept, line)
 	}
 	if len(kept) == 0 {

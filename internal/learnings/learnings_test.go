@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestParse_YAMLListAndJSONAndMapping(t *testing.T) {
@@ -46,6 +47,8 @@ func TestParse_RejectsInvalidFiles(t *testing.T) {
 		{"bad kind", "- title: t\n  reason: r\n  kind: wontfix\n", `kind "wontfix" is invalid`},
 		{"unknown field", "- title: t\n  reason: r\n  severity: high\n", "severity"},
 		{"bad glob", "- title: t\n  reason: r\n  path_glob: \"[\"\n", "path_glob"},
+		{"bad globstar glob", "- title: t\n  reason: r\n  path_glob: \"**/[z-a]\"\n", "path_glob"},
+		{"duplicate key", "- title: a\n  title: b\n  reason: r\n", "already defined"},
 		{"scalar root", "just text\n", "must be a list"},
 		{"second entry reported by number", "- title: a\n  reason: r\n- title: b\n", "entry 2:"},
 		{"malformed yaml", "- title: [unclosed\n", "invalid YAML/JSON"},
@@ -202,5 +205,54 @@ func TestFormatPrompt_TreatsEntryTextAsData(t *testing.T) {
 	}
 	if strings.Contains(got, strings.Repeat("y", 500)) {
 		t.Error("reason must be truncated")
+	}
+}
+
+func TestFormatPrompt_CountsCharactersNotBytes(t *testing.T) {
+	reason := strings.Repeat("é", 390)
+	var entries []Entry
+	for i := 0; i < 12; i++ {
+		entries = append(entries, Entry{Title: fmt.Sprintf("entry-%02d", i), Reason: reason})
+	}
+	got := FormatPrompt(entries, nil)
+	body := got[strings.Index(got, "\n- ")+1:]
+	if n := utf8.RuneCountInString(body); n > MaxPromptChars {
+		t.Errorf("entry lines use %d characters, cap is %d", n, MaxPromptChars)
+	}
+	if len(body) <= MaxPromptChars {
+		t.Fatalf("test needs multi-byte text: %d bytes is not over the %d cap", len(body), MaxPromptChars)
+	}
+	if !strings.Contains(got, "entry-11") || !strings.Contains(got, "entry-03") {
+		t.Errorf("entries that fit by character count were dropped:\n%s", got)
+	}
+}
+
+// An entry whose rendered line alone exceeds the cap is skipped; it must not
+// take the older entries down with it.
+func TestFormatPrompt_OversizedNewestEntryKeepsOlderOnes(t *testing.T) {
+	invisible := strings.Repeat("\u200b", 400) // quoted as \u200b escapes, six characters each
+	entries := []Entry{
+		{Title: "older-one", Reason: "r"},
+		{Title: "older-two", Reason: "r"},
+		{Title: "newest-oversized", Reason: invisible, Rule: strings.Repeat("\u200b", 100), PathGlob: "", Kind: KindDeclined},
+	}
+	if line := formatLine(Entry{Title: strings.Repeat("\u200b", 200), Rule: strings.Repeat("\u200b", 100), Reason: invisible}); utf8.RuneCountInString(line) <= MaxPromptChars {
+		t.Fatalf("test entry is %d characters, want more than %d", utf8.RuneCountInString(line), MaxPromptChars)
+	}
+	entries[2].Title = strings.Repeat("\u200b", 200)
+	got := FormatPrompt(entries, nil)
+	if !strings.Contains(got, "older-one") || !strings.Contains(got, "older-two") {
+		t.Errorf("older entries were dropped along with the oversized one:\n%s", got)
+	}
+	if strings.Contains(got, "u200b") {
+		t.Errorf("the oversized entry was rendered:\n%s", got)
+	}
+}
+
+func TestParse_AcceptsGlobstarGlobs(t *testing.T) {
+	for _, glob := range []string{"**/*.go", "web/**", "a/**/b/*.ts"} {
+		if _, err := Parse([]byte("- title: t\n  reason: r\n  path_glob: \"" + glob + "\"\n")); err != nil {
+			t.Errorf("path_glob %q: %v", glob, err)
+		}
 	}
 }
