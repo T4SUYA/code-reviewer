@@ -2,6 +2,7 @@
 package reviewer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -345,8 +346,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			}
 
 			// Append tool result to history as user message.
-			toolJSON, _ := json.Marshal(toolResult) //nolint:errcheck
-			resultText := fmt.Sprintf("<tool_result>%s</tool_result>", string(toolJSON))
+			resultText := fmt.Sprintf("<tool_result>%s</tool_result>", toolResultJSON(toolResult))
 			if i+1 == cfg.MaxIterations-1 {
 				resultText += "\nThis is the last turn: no more tool calls. Return the refined findings or done."
 			}
@@ -499,4 +499,17 @@ func extractResponseText(resp *genai.GenerateContentResponse) string {
 		}
 	}
 	return sb.String()
+}
+
+// toolResultJSON encodes a tool result for the conversation. HTML escaping is
+// off so the <untrusted_tool_output> frame reaches the model as the literal
+// tag the prompt names, not as \u003c escapes.
+func toolResultJSON(res ToolResult) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(res); err != nil {
+		return `{"error":"tool result could not be encoded"}`
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/genai"
 )
@@ -62,6 +64,7 @@ func ObjectSchema(properties map[string]any, required ...string) map[string]any 
 type ToolRegistry struct {
 	repoRoot string
 	tools    []Tool
+	schemas  []*genai.Schema // Converted InputSchema of each tool, in registration order.
 	index    map[string]int
 }
 
@@ -73,8 +76,9 @@ func NewToolRegistry(repoRoot string) *ToolRegistry {
 	return r
 }
 
-// Register adds a tool. A tool needs a name, an input schema and an Execute
-// function, and its name must not already be registered.
+// Register adds a tool. A tool needs a name, an Execute function and an input
+// schema the response schema can express (see schemaFromJSONSchema), and its
+// name must not already be registered.
 func (r *ToolRegistry) Register(t Tool) error {
 	switch {
 	case t.Name == "":
@@ -87,8 +91,13 @@ func (r *ToolRegistry) Register(t Tool) error {
 	if _, dup := r.index[t.Name]; dup {
 		return fmt.Errorf("tool %q is already registered", t.Name)
 	}
+	schema, err := schemaFromJSONSchema(t.InputSchema)
+	if err != nil {
+		return fmt.Errorf("tool %q has an unsupported input schema: %w", t.Name, err)
+	}
 	r.index[t.Name] = len(r.tools)
 	r.tools = append(r.tools, t)
+	r.schemas = append(r.schemas, schema)
 	return nil
 }
 
@@ -129,11 +138,31 @@ func (r *ToolRegistry) Execute(ctx context.Context, tool string, args map[string
 
 const untrustedTag = "untrusted_tool_output"
 
-// wrapUntrusted frames tool output as data. A closing tag inside the output
-// is neutralised so the output cannot end the frame early.
+// maxUntrustedOutputBytes caps what any untrusted tool puts into the
+// conversation, whatever limit the tool applies itself.
+const maxUntrustedOutputBytes = 64 * 1024
+
+var untrustedClosingTag = regexp.MustCompile(`(?i)</` + untrustedTag)
+
+// wrapUntrusted frames tool output as data, cut to maxUntrustedOutputBytes. A
+// closing tag inside the output is neutralised so the output cannot end the
+// frame early.
 func wrapUntrusted(tool, output string) string {
-	output = strings.ReplaceAll(output, "</"+untrustedTag, "<\\/"+untrustedTag)
+	output = truncateUTF8(output, maxUntrustedOutputBytes)
+	output = untrustedClosingTag.ReplaceAllString(output, "<\\/"+untrustedTag)
 	return fmt.Sprintf("<%s tool=%q>\n%s\n</%s>", untrustedTag, tool, output, untrustedTag)
+}
+
+// truncateUTF8 cuts s to at most max bytes on a rune boundary and marks the cut.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("\n[... truncated at %d bytes ...]", max)
 }
 
 // Prompt returns the tool descriptions for the model prompt.
@@ -174,7 +203,7 @@ func (r *ToolRegistry) schemaBranches() []*genai.Schema {
 			Properties: map[string]*genai.Schema{
 				"action": {Type: genai.TypeString, Enum: []string{"tool"}},
 				"tool":   {Type: genai.TypeString, Enum: []string{t.Name}},
-				"args":   schemaFromJSONSchema(t.InputSchema),
+				"args":   r.schemas[i],
 			},
 			Required:         []string{"action", "tool", "args"},
 			PropertyOrdering: []string{"action", "tool", "args"},
@@ -183,46 +212,126 @@ func (r *ToolRegistry) schemaBranches() []*genai.Schema {
 	return branches
 }
 
-// schemaFromJSONSchema converts a JSON Schema into the genai subset. Keywords
+// maxSchemaDepth bounds how deeply a tool's argument schema may nest.
+const maxSchemaDepth = 8
+
+// unsupportedKeywords are JSON Schema constructs the genai response schema
+// cannot express faithfully; a schema using one is refused whole.
+var unsupportedKeywords = []string{"anyOf", "oneOf", "allOf", "not", "$ref", "$defs", "definitions", "if", "then", "else", "patternProperties"}
+
+// schemaFromJSONSchema converts a JSON Schema into the genai subset and
+// refuses a schema it would have to approximate: composition keywords
+// (anyOf, oneOf, allOf, not), references, objects with no declared
+// properties that stay open to extra keys, properties and array items
+// without a type, and nesting deeper than maxSchemaDepth. Annotation keywords
 // genai has no field for are dropped.
-func schemaFromJSONSchema(js map[string]any) *genai.Schema {
+func schemaFromJSONSchema(js map[string]any) (*genai.Schema, error) {
+	s, err := convertSchema(js, "args", 0)
+	if err != nil {
+		return nil, err
+	}
+	if s.Type != genai.TypeObject {
+		return nil, fmt.Errorf("args: the root type must be object")
+	}
+	return s, nil
+}
+
+func convertSchema(js map[string]any, path string, depth int) (*genai.Schema, error) {
+	if depth > maxSchemaDepth {
+		return nil, fmt.Errorf("%s: nested deeper than %d levels", path, maxSchemaDepth)
+	}
+	for _, kw := range unsupportedKeywords {
+		if _, ok := js[kw]; ok {
+			return nil, fmt.Errorf("%s: %q is not supported", path, kw)
+		}
+	}
 	s := &genai.Schema{}
 	switch typ := js["type"].(type) {
 	case string:
 		s.Type = genaiType(typ)
-	case []any: // ["string", "null"]: the first non-null type.
+	case []any: // ["string", "null"]: one non-null type.
 		for _, v := range typ {
-			if name, ok := v.(string); ok && name != "null" {
-				s.Type = genaiType(name)
-				break
+			name, ok := v.(string)
+			if !ok || name == "null" {
+				continue
 			}
+			if s.Type != "" {
+				return nil, fmt.Errorf("%s: a union of several types is not supported", path)
+			}
+			s.Type = genaiType(name)
 		}
+	}
+	if s.Type == "" {
+		return nil, fmt.Errorf("%s: missing or unsupported type", path)
 	}
 	if desc, ok := js["description"].(string); ok {
 		s.Description = desc
 	}
-	if props, ok := js["properties"].(map[string]any); ok {
-		s.Properties = map[string]*genai.Schema{}
-		for name, v := range props {
-			if sub, ok := v.(map[string]any); ok {
-				s.Properties[name] = schemaFromJSONSchema(sub)
-			}
+	switch s.Type {
+	case genai.TypeObject:
+		if err := convertObject(s, js, path, depth); err != nil {
+			return nil, err
 		}
-	}
-	for _, v := range asSlice(js["required"]) {
-		if name, ok := v.(string); ok {
-			s.Required = append(s.Required, name)
+	case genai.TypeArray:
+		items, ok := js["items"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s: an array needs a typed items schema", path)
 		}
-	}
-	if items, ok := js["items"].(map[string]any); ok {
-		s.Items = schemaFromJSONSchema(items)
+		sub, err := convertSchema(items, path+"[]", depth+1)
+		if err != nil {
+			return nil, err
+		}
+		s.Items = sub
 	}
 	for _, v := range asSlice(js["enum"]) {
-		if str, ok := v.(string); ok {
-			s.Enum = append(s.Enum, str)
+		str, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: only string enums are supported", path)
 		}
+		s.Enum = append(s.Enum, str)
 	}
-	return s
+	return s, nil
+}
+
+func convertObject(s *genai.Schema, js map[string]any, path string, depth int) error {
+	props, hasProps := js["properties"].(map[string]any)
+	switch extra := js["additionalProperties"].(type) {
+	case nil:
+		if !hasProps {
+			return fmt.Errorf("%s: an object needs declared properties", path)
+		}
+	case bool:
+		if extra {
+			return fmt.Errorf("%s: an object open to additional properties is not supported", path)
+		}
+	default:
+		return fmt.Errorf("%s: additionalProperties schemas are not supported", path)
+	}
+	if len(props) > 0 {
+		s.Properties = map[string]*genai.Schema{}
+	}
+	for name, v := range props {
+		sub, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s.%s: property schema is not an object", path, name)
+		}
+		conv, err := convertSchema(sub, path+"."+name, depth+1)
+		if err != nil {
+			return err
+		}
+		s.Properties[name] = conv
+	}
+	for _, v := range asSlice(js["required"]) {
+		name, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if _, declared := props[name]; !declared {
+			return fmt.Errorf("%s: required property %q is not declared", path, name)
+		}
+		s.Required = append(s.Required, name)
+	}
+	return nil
 }
 
 func asSlice(v any) []any {
