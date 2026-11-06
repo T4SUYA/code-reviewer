@@ -164,12 +164,18 @@ extra_rules: |
 # or ~/.config/code-reviewer/config.yaml). See README.md, "Agent Tools and MCP Servers".
 
 # Dependency tools the agent loop may call, to check claims about an API,
-# option or version against the repository's pins and installed dependencies.
-# Off unless listed. Neither tool uses the network.
-#   pinned_version         versions pinned by lockfiles and manifests
+# option or version against the repository's pins, a public registry or
+# version-pinned docs. Off unless listed. Registry and docs requests carry only
+# validated names, versions and a short topic, never code or paths, and are
+# logged.
+#   pinned_version         versions pinned by lockfiles and manifests (no network)
+#   registry_lookup        does a package/version exist (npm, pypi, go, maven,
+#                          terraform, opentofu, docker)
 #   read_dependency_source files of an installed dependency (node_modules, Go module cache)
-# agent_tools: [pinned_version, read_dependency_source]
-# (agent_tool_options is operator-only; see README.md.)
+#   docs_lookup            Context7 documentation for a library at a version
+# agent_tools: [pinned_version, registry_lookup, read_dependency_source, docs_lookup]
+# (agent_tool_options -- mirrors, docs URL and key variable, timeouts, caps --
+# is operator-only; see README.md.)
 
 # NOTE: The following settings are CLI/env-only and cannot be set in YAML:
 #   --models / --consensus-threshold (multi-model consensus)

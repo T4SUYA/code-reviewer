@@ -607,20 +607,48 @@ Go programs that embed `pkg/agent` can register their own tools with `agent.Conf
 
 #### Dependency tools
 
-A finding that says an API, option or version does not exist cannot be disproved with the three repository tools. Two built-in tools read what the checkout pins and what it has installed. List the ones you want under `agent_tools` in `.code-reviewer.yaml`; none is on by default, and with the setting absent the prompt, response schema and behavior are unchanged. Neither tool uses the network.
+A finding that says an API, option or version does not exist cannot be disproved with the three repository tools. Four built-in tools give the loop evidence for such claims. List the ones you want under `agent_tools` in `.code-reviewer.yaml`; none is on by default, and with the setting absent the prompt, response schema and behavior are unchanged.
 
 ```yaml
-agent_tools: [pinned_version, read_dependency_source]
+agent_tools: [pinned_version, registry_lookup, read_dependency_source, docs_lookup]
 ```
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `pinned_version` | `package`, `ecosystem?` | Reads the checkout's `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `package.json`, `go.mod`, `go.sum`, `uv.lock`, `poetry.lock`, `requirements*.txt`, `pyproject.toml`, `pom.xml`, `gradle.lockfile` and `.terraform.lock.hcl`, plus `.nvmrc`, `engines`, `.python-version` and `requires-python` for the `node` and `python` runtimes. Returns each pinned version with its file, or "No pin found". |
-| `read_dependency_source` | `package`, `path?`, `start_line?`, `end_line?` | Reads a file of an installed dependency: `node_modules/<package>` (typings included) or the Go module cache at the version `go.mod` requires. Paths stay inside the package directory (no `..`, no symlinks out). Answers "not installed" when the checkout has no copy, which says nothing about whether the API exists. |
+| `pinned_version` | `package`, `ecosystem?` | Reads the checkout's `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `package.json`, `go.mod`, `go.sum`, `uv.lock`, `poetry.lock`, `requirements*.txt`, `pyproject.toml`, `pom.xml`, `gradle.lockfile` and `.terraform.lock.hcl`, plus `.nvmrc`, `engines`, `.python-version` and `requires-python` for the `node` and `python` runtimes. Returns each pinned version with its file, or "No pin found". No network. |
+| `registry_lookup` | `ecosystem`, `package`, `version?` | Asks npm, PyPI, the Go module proxy, Maven Central, the Terraform or OpenTofu registry, or Docker Hub (the version is the tag) whether the package and version exist, when the version was published, the latest version and whether it is deprecated or yanked, where the registry reports it. |
+| `read_dependency_source` | `package`, `path?`, `start_line?`, `end_line?` | Reads a file of an installed dependency: `node_modules/<package>` (typings included) or the Go module cache at the version `go.mod` requires. Paths stay inside the package directory (no `..`, no symlinks out). Answers "not installed" when the checkout has no copy, which says nothing about whether the API exists. No network. |
+| `docs_lookup` | `library`, `version`, `topic` | Fetches version-pinned documentation from the [Context7](https://context7.com) HTTP API for a library id such as `/microsoft/playwright`. |
 
-Both tools return content the repository or a dependency controls, so their output is untrusted: it reaches the model inside `<untrusted_tool_output>` tags and the prompt tells the model to treat it only as evidence. Beyond that framing, `pinned_version` prints a version only if it parses as a version or range (anything else, prose included, reads as `(unparseable)`) and prints file paths as one escaped line; `read_dependency_source` lists directory entries the same way. Both stop when the loop's context is cancelled.
+**What leaves the machine.** `registry_lookup` and `docs_lookup` are the only tools that use the network. `registry_lookup` sends an ecosystem, a package and a version; `docs_lookup` sends a library id, a version and a topic. The model chooses those values, and the reviewer checks each one before any request:
 
-`read_dependency_source` needs the dependency installed in the checkout (for example `npm ci --ignore-scripts` before the review); the reviewer never installs anything itself. The Go module cache is `GOMODCACHE` or `go env GOMODCACHE`; to point at another cache set `agent_tool_options.go_mod_cache` in the operator config. Like `agent_mcp_servers`, `agent_tool_options` is never read from `.code-reviewer.yaml`: it names a location on the runner, so a repository config that sets it is ignored with a warning (see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) for the operator config).
+- It must match a strict character set for its role (a package name in the ecosystem's own form, a version of letters, digits and `. _ + ~ -`, a topic of at most 80 characters of letters, digits, spaces and `. _ - /`; the docs query is a fixed template around the topic). No component of a coordinate may be `.` or `..`.
+- It must not look like a credential: values with the shape of a known token (GitHub, GitLab, Slack, AWS, Google, JWT, PEM, bearer), a long hex digest, or a long random-looking run of letters and digits are rejected and nothing is sent.
+- Every lookup is logged with its ecosystem, package, version and topic.
+
+These checks narrow what can be sent to short identifier-shaped strings and reject the obvious secrets. They do not prove a string harmless: an identifier-shaped string can still carry a few words of information, and the check for secret shapes is a heuristic. If your reviewed code must not influence any outbound request at all, leave `registry_lookup` and `docs_lookup` out of `agent_tools`; `pinned_version` and `read_dependency_source` never use the network.
+
+Each ecosystem is called only on the host of its base URL, redirects to another host are refused, and every request is bounded by a timeout and a response cap. A lookup that fails (timeout, HTTP error, rate limit) is reported as "result unknown, not evidence that the package or version does not exist". Strings a registry supplies (dates, versions, deprecation notices) are reduced to one escaped line and capped before they reach the model; documentation text has control characters removed and is capped.
+
+All four tools return content that comes from outside the reviewer (the repository, a dependency or a network service), so their output is untrusted: it reaches the model inside `<untrusted_tool_output>` tags and the prompt tells the model to treat it only as evidence. `pinned_version` prints a version only if it parses as a version or range (anything else, prose included, reads as `(unparseable)`) and prints file paths as one escaped line; `read_dependency_source` lists directory entries the same way. Local tools stop when the loop's context is cancelled.
+
+**Operator-only options.** `agent_tool_options` sets where the tools call and what they read, so like `agent_mcp_servers` it is never read from `.code-reviewer.yaml`: a repository config that sets it is ignored with a warning. Put it in the operator config (see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) for where that file lives):
+
+```yaml
+# operator config
+agent_tool_options:                  # All optional
+  registry_urls: {npm: "https://npm-mirror.example.org"}   # Mirror per ecosystem (https; http only for loopback)
+  registry_timeout: 8s               # Per request (default 8s)
+  max_response_bytes: 8388608        # Cap on a registry response (default 8 MiB)
+  docs_url: https://context7.com     # Default
+  docs_api_key_env: CONTEXT7_API_KEY # Default; the key is optional
+  docs_max_output_bytes: 8192        # Documentation text returned (default 8 KiB)
+  go_mod_cache: ""                   # Default: GOMODCACHE, then `go env GOMODCACHE`
+```
+
+The Context7 API key is read from the variable named by `docs_api_key_env` and sent only to the default docs host (`https://context7.com`): a `docs_url` override never receives it, so the key cannot be redirected to another host.
+
+`read_dependency_source` needs the dependency installed in the checkout (for example `npm ci --ignore-scripts` before the review); the reviewer never installs anything itself.
 
 ### Auto-Approve
 
