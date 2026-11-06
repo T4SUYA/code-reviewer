@@ -1470,6 +1470,46 @@ func TestLoad_AgentScope(t *testing.T) {
 	}
 }
 
+func TestLoad_AgentExploreSettings(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		args         []string
+		wantMode     string
+		wantClaims   string
+		wantMaxAdded int
+		wantErr      bool
+	}{
+		{name: "defaults", wantMode: "refine", wantClaims: "keep", wantMaxAdded: 5},
+		{name: "yaml", yaml: "agent_mode: explore\nunverifiable_claims: downgrade\nagent_max_added_findings: 2\n",
+			wantMode: "explore", wantClaims: "downgrade", wantMaxAdded: 2},
+		{name: "flags override yaml", yaml: "agent_mode: refine\nunverifiable_claims: keep\n",
+			args:     []string{"--agent-mode", "explore", "--unverifiable-claims=downgrade", "--agent-max-added", "7"},
+			wantMode: "explore", wantClaims: "downgrade", wantMaxAdded: 7},
+		{name: "invalid mode", yaml: "agent_mode: wander\n", wantErr: true},
+		{name: "invalid claims policy", args: []string{"--unverifiable-claims", "drop"}, wantErr: true},
+		{name: "negative cap", yaml: "agent_max_added_findings: -1\n", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := loadWithAgentScope(t, tt.yaml, tt.args...)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Load() succeeded, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.AgentMode != tt.wantMode || cfg.UnverifiableClaims != tt.wantClaims || cfg.AgentMaxAdded != tt.wantMaxAdded {
+				t.Errorf("got mode=%q claims=%q maxAdded=%d, want %q %q %d",
+					cfg.AgentMode, cfg.UnverifiableClaims, cfg.AgentMaxAdded, tt.wantMode, tt.wantClaims, tt.wantMaxAdded)
+			}
+		})
+	}
+}
+
 // TestLoad_Temperature verifies the optional sampling temperature is unset by
 // default and can be set from env, with the flag taking precedence.
 func TestLoad_Temperature(t *testing.T) {

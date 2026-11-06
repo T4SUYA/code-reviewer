@@ -224,6 +224,9 @@ type Config struct {
 	AgentToolOptions   AgentToolOptions // Mirrors, docs URL and key variable, timeouts, caps and cache location of the dependency tools; operator config only.
 	OperatorConfig     string           // Path of the operator-trusted config file (--operator-config).
 	AgentScope         string           // Findings the agent loop examines: "all" (default) or "high_severity_only".
+	AgentMode          string           // "refine" (default: the loop may only drop or modify findings) or "explore" (it may also add findings it establishes with tool evidence).
+	AgentMaxAdded      int              // Findings the loop may add per run in explore mode (default 5).
+	UnverifiableClaims string           // "keep" (default) or "downgrade" findings whose claim about something outside the repository the loop could not confirm with a tool result.
 
 	// Scope enforcement.
 	MaxFiles    int
@@ -311,6 +314,9 @@ type repoConfig struct {
 	AgentTimeout             string   `yaml:"agent_timeout"`
 	AgentScope               string   `yaml:"agent_scope"`
 	AgentTools               []string `yaml:"agent_tools"`
+	AgentMode                string   `yaml:"agent_mode"`
+	AgentMaxAdded            *int     `yaml:"agent_max_added_findings"`
+	UnverifiableClaims       string   `yaml:"unverifiable_claims"`
 
 	IntentChecks *model.IntentChecks `yaml:"intent_checks"`
 }
@@ -673,6 +679,15 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if len(rc.AgentTools) > 0 {
 		c.AgentTools = rc.AgentTools
 	}
+	if rc.AgentMode != "" {
+		c.AgentMode = rc.AgentMode
+	}
+	if rc.AgentMaxAdded != nil {
+		c.AgentMaxAdded = *rc.AgentMaxAdded
+	}
+	if rc.UnverifiableClaims != "" {
+		c.UnverifiableClaims = rc.UnverifiableClaims
+	}
 	return validateAgentTools(c.AgentTools, c.AgentToolOptions)
 }
 
@@ -972,6 +987,9 @@ func (c *Config) loadFlags() error {
 	agentIterations := fs.Int("agent-iterations", 3, "Max agent refinement iterations")
 	agentTimeout := fs.Duration("agent-timeout", 3*time.Minute, "Agent loop timeout")
 	agentScope := fs.String("agent-scope", "", "Findings the agent loop examines: all (default) or high_severity_only")
+	agentMode := fs.String("agent-mode", "", "Agent loop mode: refine (default, may only drop or modify findings) or explore (may also add findings backed by tool evidence)")
+	agentMaxAdded := fs.Int("agent-max-added", 5, "Findings the agent loop may add per run in explore mode")
+	unverifiableClaims := fs.String("unverifiable-claims", "", "Findings asserting an unconfirmed fact about something outside the repository: keep (default) or downgrade")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -1189,6 +1207,12 @@ func (c *Config) loadFlags() error {
 			c.AgentTimeout = *agentTimeout
 		case "agent-scope":
 			c.AgentScope = *agentScope
+		case "agent-mode":
+			c.AgentMode = *agentMode
+		case "agent-max-added":
+			c.AgentMaxAdded = *agentMaxAdded
+		case "unverifiable-claims":
+			c.UnverifiableClaims = *unverifiableClaims
 		}
 	})
 	// Apply agent defaults if not set by either flag or YAML.
@@ -1360,6 +1384,31 @@ func (c *Config) validate() error {
 		// Valid.
 	default:
 		return &ConfigError{Err: fmt.Errorf("invalid agent scope %q: must be all or high_severity_only", c.AgentScope)}
+	}
+
+	if c.AgentMode == "" {
+		c.AgentMode = "refine"
+	}
+	switch c.AgentMode {
+	case "refine", "explore":
+		// Valid.
+	default:
+		return &ConfigError{Err: fmt.Errorf("invalid agent mode %q: must be refine or explore", c.AgentMode)}
+	}
+	if c.UnverifiableClaims == "" {
+		c.UnverifiableClaims = "keep"
+	}
+	switch c.UnverifiableClaims {
+	case "keep", "downgrade":
+		// Valid.
+	default:
+		return &ConfigError{Err: fmt.Errorf("invalid unverifiable claims policy %q: must be keep or downgrade", c.UnverifiableClaims)}
+	}
+	if c.AgentMaxAdded == 0 {
+		c.AgentMaxAdded = 5
+	}
+	if c.AgentMaxAdded < 0 {
+		return &ConfigError{Err: fmt.Errorf("invalid agent max added findings %d: must be positive", c.AgentMaxAdded)}
 	}
 
 	// Validate platform visibility.
