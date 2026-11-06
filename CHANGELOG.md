@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `agent_mcp_servers` configuration field (YAML only). Each entry starts an MCP server over stdio when the `--agent` loop runs and registers its allowlisted tools as `<server>.<tool>` (`name`, `command`, `args`, `env_allowlist`, `tools_allowlist`, optional `call_timeout` and `max_output_bytes`). The server receives only `PATH` and the variables in `env_allowlist`; tools outside `tools_allowlist` are never offered and are refused if called; each call has a timeout (default 30s) and its output is capped (default 16 KiB). Tool output reaches the model wrapped in `<untrusted_tool_output>` tags, and the prompt tells the model to treat it as data. A server that fails to start is skipped with a warning. Unset keeps the loop unchanged.
+- `agent.Config.ExtraTools` and the `agent.Tool` type let Go programs embedding `pkg/agent` add tools to the loop.
+
+### Changed
+- The agent loop's tools live in a registry. `read_file`, `find_definition` and `list_directory` register into it with the same names, arguments, prompt text and response schema as before; a golden test pins the prompt and schema. `agent.ToolRegistry` gains `Register`, `Names` and `Prompt`.
+- New dependency: `github.com/modelcontextprotocol/go-sdk` (Apache-2.0, with MIT-licensed contributions not yet relicensed).
+
 ## [0.28.0] — 2026-11-02
 
 ### Added

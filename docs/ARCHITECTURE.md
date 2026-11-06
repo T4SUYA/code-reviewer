@@ -403,7 +403,7 @@ A Vertex AI snapshot suffix resolves to its base model: `claude-haiku-4-5@202510
 ### Agent Refinement Loop (`pkg/agent`)
 
 When `--agent` is enabled (optionally scoped via `--agent-scope high_severity_only`), `agent.Refiner` runs a bounded, multi-turn verification loop over candidate findings before they are reported:
-- **Tools**: `read_file` (bounded line ranges, symlink-safe within repo root), `find_definition` (tree-sitter + ripgrep symbol lookup), and `list_directory`
+- **Tools**: `read_file` (bounded line ranges, symlink-safe within repo root), `find_definition` (tree-sitter + ripgrep symbol lookup), and `list_directory`. They are registered in a `ToolRegistry`; each `Tool` declares its name, description, JSON Schema arguments and an execute function, and the prompt and the response schema are generated from the registry. Extra tools come from `Config.ExtraTools` (Go callers) or from `agent_mcp_servers` (stdio MCP servers, `internal/mcp`), whose allowlisted tools register as `<server>.<tool>` with untrusted-output wrapping, a per-call timeout and an output size cap
 - **Schema-Constrained Verdict**: On the final turn, the model emits a structured `Verdict` (`keep`, `drop`, or `downgrade` with updated severity and reasoning) constrained by a native JSON response schema (`VerdictResponseSchema()`) and repaired via `pkg/repair.RepairJSON()`
 - **Fail-Open Safety**: If a tool call or model turn fails or hits the turn/token budget, the original finding is kept and the error is recorded in `VerdictRecord` and `RunSummary` in the JSONL audit log (`--audit-log`)
 
@@ -447,6 +447,8 @@ cleanup_mode: resolve
 dismissal_mode: resolve_only
 agent: true
 agent_scope: high_severity_only
+agent_mcp_servers:
+  - {name: docs, command: docs-mcp-server, tools_allowlist: [query-docs]}
 chunk_strategy: split
 excluded_patterns: ["*.generated.go"]
 extra_rules: "Always flag SQL string concatenation"

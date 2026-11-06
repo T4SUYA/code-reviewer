@@ -58,13 +58,13 @@ func (g *GenaiChatter) Chat(ctx context.Context, history []*genai.Content, confi
 
 // AgentConfig configures the agent refinement loop.
 type AgentConfig struct {
-	MaxIterations   int           // Max refinement turns (default 3).
-	RemainingBudget int64         // Token budget remaining from initial review.
-	Timeout         time.Duration // Wall-clock timeout (default 3m).
-	RepoRoot        string        // Repository root for tool access.
-	OmitTemperature bool          // Send no temperature, leaving the model's own default (default false: 0.0).
-	ThinkingLevel   string        // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
-	ExtraTools      []Tool        // Tools registered after the built-in repository tools.
+	MaxIterations   int                // Max refinement turns (default 3).
+	RemainingBudget int64              // Token budget remaining from initial review.
+	Timeout         time.Duration      // Wall-clock timeout (default 3m).
+	RepoRoot        string             // Repository root for tool access.
+	OmitTemperature bool               // Send no temperature, leaving the model's own default (default false: 0.0).
+	ThinkingLevel   string             // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
+	ExtraTools      []Tool             // Tools registered after the built-in repository tools.
 	MCPServers      []mcp.ServerConfig // MCP servers whose allowlisted tools register as "<server>.<tool>".
 }
 

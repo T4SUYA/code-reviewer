@@ -27,6 +27,14 @@ type Result = reviewer.AgentResult
 // ToolResult holds the output of a tool invocation.
 type ToolResult = reviewer.ToolResult
 
+// Tool is one capability the agent loop can call: a name, a description, a
+// JSON Schema for its arguments and an execute function. Pass extra tools in
+// Config.ExtraTools.
+type Tool = reviewer.Tool
+
+// ObjectSchema builds the JSON Schema of a tool's arguments object.
+var ObjectSchema = reviewer.ObjectSchema
+
 // ToolRegistry holds available agent tools scoped to a repo root.
 type ToolRegistry = reviewer.ToolRegistry
 

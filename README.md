@@ -364,7 +364,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--max-files` | Maximum files before scope enforcement (0 = unlimited) | `0` |
 | `--scope-action` | Action when scope exceeded: `warn` or `fail` | `warn` |
 | `--audit-log` | Write structured JSONL audit log to file (`files_skipped_detail` lists each unreviewed file with its reason; with `--agent`, includes `agent_verdicts` and an `agent` summary of the loop run; `suppressed` lists findings left out because their thread was [dismissed](#suppressed-findings-in-the-audit-log)) | — |
-| `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition` and `list_directory` | `false` |
+| `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition`, `list_directory` and the tools of any configured [MCP servers](#agent-tools-and-mcp-servers) | `false` |
 | `--agent-scope` | Findings the agent loop examines: `all` or `high_severity_only` (HIGH and CRITICAL only; also `agent_scope` in YAML) | `all` |
 | `--auto-approve` | Automatically approve MR/PR on clean review (CI mode only) | `false` |
 | `--auto-fix-remote` | Automatically apply inline suggestions via the platform API (CI mode, requires `--comment-mode discussions`) | `false` |
@@ -569,6 +569,30 @@ For repeatable verdicts on unchanged code, `temperature: 0` (or `--temperature 0
 Some models deprecate or reject sampling parameters. Google's Gemini 3 documentation, for example, recommends keeping `temperature` at its default and lists it among the deprecated sampling parameters. For such models set `use_temperature: false` (or `--use-temperature=false`, or `REVIEW_USE_TEMPERATURE=false`): the tool then sends no temperature on any call (review, summary, explain, consensus and the agent loop, over Vertex AI or `--api-url`), and the model's own default applies. It cannot be combined with `temperature`. For repeatable verdicts on such models, prefer multi-model consensus (`--models`).
 
 To choose how much a thinking model reasons before answering, set `thinking_level` (or `--thinking-level`, or `REVIEW_THINKING_LEVEL`) to `minimal`, `low`, `medium` or `high`. The level is sent as the `ThinkingConfig` of every Vertex AI generation request (review, summary, explain, consensus and the agent loop) exactly as given, so a model that does not accept it returns its own API error. When unset, no thinking config is sent and the request is unchanged. It is not sent to `--api-url` endpoints, which log a warning and ignore it.
+
+### Agent Tools and MCP Servers
+
+The `--agent` loop starts with `read_file`, `find_definition` and `list_directory`. To give it more evidence, list [Model Context Protocol](https://modelcontextprotocol.io) servers under `agent_mcp_servers` in `.code-reviewer.yaml`. Each server is started as a child process over stdio when the loop runs. The setting is YAML-only and off by default: with no `agent_mcp_servers`, the loop's prompt, response schema and behavior are unchanged.
+
+```yaml
+agent_mcp_servers:
+  - name: docs                    # Tools register as "<name>.<tool>", e.g. docs.query-docs
+    command: docs-mcp-server
+    args: ["--stdio"]
+    env_allowlist: [DOCS_API_KEY] # Parent environment variables the server receives (PATH is always passed)
+    tools_allowlist: [query-docs] # Only these server tools are offered to the model and callable
+    call_timeout: 30s             # Optional: per-call timeout (default 30s)
+    max_output_bytes: 16384       # Optional: per-result size cap (default 16 KiB)
+```
+
+- `name` uses letters, digits, `-` and `_` and starts with a letter; names must be unique. `command` is required.
+- A server tool that is not in `tools_allowlist` is never shown to the model and is refused if called. An empty allowlist exposes nothing.
+- The server process sees only `PATH` and the variables named in `env_allowlist`; nothing else from the reviewer's environment (API keys, CI tokens) is passed on.
+- A call that exceeds `call_timeout` fails and the loop continues; output beyond `max_output_bytes` is cut and marked as truncated.
+- Output of MCP tools is untrusted. It reaches the model wrapped in `<untrusted_tool_output>` tags, and the prompt tells the model to treat it as evidence about the code and never to follow instructions inside it.
+- A server that fails to start is skipped with a warning; the loop runs with the remaining tools.
+
+Go programs that embed `pkg/agent` can register their own tools with `agent.Config.ExtraTools` (a name, a description, a JSON Schema for the arguments and an execute function); they appear in the prompt and the response schema the same way.
 
 ### Auto-Approve
 
