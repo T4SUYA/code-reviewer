@@ -95,9 +95,11 @@ func registryLookupSpec(opts Options) Spec {
 		Usage: `Args: {"ecosystem": "npm|pypi|go|maven|terraform|opentofu|docker", "package": "<name>", "version": "<optional version or image tag>"}
 Package forms: npm "react" or "@scope/name"; PyPI "requests"; Go module path; Maven "group:artifact"; Terraform/OpenTofu provider "hashicorp/google" or module "namespace/name/provider"; Docker image "node" or "library/node" (version is the tag).
 Only the ecosystem, package and version are sent to the registry. A failed lookup means "unknown", never "does not exist".`,
-		InputSchema: objectSchema(map[string]any{"ecosystem": str, "package": str, "version": str}, "ecosystem", "package"),
-		Timeout:     opts.RegistryTimeout * 2,
-		Untrusted:   true,
+		InputSchema:      objectSchema(map[string]any{"ecosystem": str, "package": str, "version": str}, "ecosystem", "package"),
+		Timeout:          opts.RegistryTimeout * 2,
+		Untrusted:        true,
+		ExternalEvidence: true,
+		Inconclusive:     func(out string) bool { return strings.Contains(out, "\n"+packageMissingLine) },
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			eco, _ := stringArg(args, "ecosystem")
 			pkg, _ := stringArg(args, "package")
@@ -154,6 +156,9 @@ func (rl registryLookup) baseURL(eco string) (*url.URL, error) {
 	return parseBaseURL(raw)
 }
 
+// packageMissingLine is the line registry_lookup prints when the registry has no such package.
+const packageMissingLine = "package exists: no"
+
 // Caps on the registry-supplied strings echoed to the model.
 const (
 	maxRegistryDateRunes   = 40
@@ -170,7 +175,7 @@ func formatLookup(eco, pkg, version string, r lookupResult) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "ecosystem: %s\npackage: %s\n", eco, pkg)
 	if !r.packageExists {
-		sb.WriteString("package exists: no (the registry has no such package)\n")
+		sb.WriteString(packageMissingLine + " (the registry has no such package)\n")
 		return strings.TrimRight(sb.String(), "\n")
 	}
 	sb.WriteString("package exists: yes\n")

@@ -43,7 +43,15 @@ type Spec struct {
 	// Untrusted marks output that comes from outside the reviewer: text the
 	// repository under review or a dependency controls.
 	Untrusted bool
-	Execute   func(ctx context.Context, args map[string]any) (string, error)
+	// ExternalEvidence marks a tool whose conclusive answer can confirm a fact
+	// about something outside the repository: a dependency's version, API or
+	// documentation.
+	ExternalEvidence bool
+	// Inconclusive reports whether an answer says only that the tool found
+	// nothing ("not installed", "no pin found"), which confirms nothing and
+	// refutes nothing. Nil means every answer is conclusive.
+	Inconclusive func(output string) bool
+	Execute      func(ctx context.Context, args map[string]any) (string, error)
 }
 
 // Options configures the tools. The zero value of every field selects its default.

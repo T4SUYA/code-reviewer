@@ -3,6 +3,8 @@ package reviewer
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,6 +278,97 @@ func downgradeRun(t *testing.T, cfg AgentConfig, returned map[string]any, calls 
 	return res
 }
 
+// evidenceTool is an external-evidence tool (like a dependency or MCP tool)
+// that answers with a fixed text.
+func evidenceTool(name, answer string, inconclusive func(string) bool) Tool {
+	return Tool{
+		Name: name, Description: "test lookup", InputSchema: ObjectSchema(map[string]any{}),
+		UntrustedOutput: true, ExternalEvidence: true, Inconclusive: inconclusive,
+		Execute: func(context.Context, map[string]any) (string, error) { return answer, nil },
+	}
+}
+
+func notInstalled(out string) bool { return strings.HasPrefix(out, "not installed") }
+
+// citeCall runs the scripted tool calls, then returns a finding with an
+// external claim that cites the id of the last call.
+func citeCall(t *testing.T, tools []Tool, calls ...string) *AgentResult {
+	t.Helper()
+	claim := map[string]any{"external_claim": true, "verified_by": []string{fmt.Sprintf("t%d", len(calls))}}
+	cfg := AgentConfig{ExtraTools: tools, UnverifiableClaims: UnverifiableClaimsDowngrade,
+		RepoRoot: repoWithFile(t, "a.go", 20), MaxIterations: 10}
+	replies := append(calls, findingsReply(t, wire("a.go", 5, "bug", "initial", claim)))
+	res, err := RunAgentLoop(context.Background(), &scriptedChatter{replies: replies}, cfg, exploreInitial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// Only a conclusive answer of a dependency or MCP tool confirms an external
+// claim: not a repository tool, not a failed call, and not an answer that says
+// the tool found nothing.
+func TestDowngrade_OnlyConclusiveExternalEvidenceConfirmsAClaim(t *testing.T) {
+	tools := []Tool{
+		evidenceTool("lookup", "version 2.0 exists", notInstalled),
+		evidenceTool("lookup_missing", "not installed: left-pad", notInstalled),
+		evidenceTool("lookup_blank", "  \n", nil),
+		{Name: "lookup_error", Description: "fails", InputSchema: ObjectSchema(map[string]any{}), ExternalEvidence: true,
+			Execute: func(context.Context, map[string]any) (string, error) { return "", errors.New("boom") }},
+	}
+	cases := []struct {
+		name      string
+		call      string
+		confirmed bool
+	}{
+		{"conclusive answer", toolCallReply("lookup", map[string]any{}), true},
+		{"answer that found nothing", toolCallReply("lookup_missing", map[string]any{}), false},
+		{"blank answer", toolCallReply("lookup_blank", map[string]any{}), false},
+		{"failed call", toolCallReply("lookup_error", map[string]any{}), false},
+		{"read_file of the repository", toolCallReply("read_file", map[string]any{"path": "a.go"}), false},
+		{"list_directory", toolCallReply("list_directory", map[string]any{"path": "."}), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := citeCall(t, tools, c.call)
+			lowered := res.Findings[0].Severity == "LOW"
+			if lowered == c.confirmed {
+				t.Errorf("severity = %q, confirmed = %v", res.Findings[0].Severity, c.confirmed)
+			}
+		})
+	}
+}
+
+func TestDowngrade_DependencyToolsConfirmOnlyWhenTheyFoundSomething(t *testing.T) {
+	repo := repoWithFile(t, "a.go", 20)
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(`{"dependencies":{"react":"^19.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name      string
+		call      string
+		confirmed bool
+	}{
+		{"pin found", toolCallReply("pinned_version", map[string]any{"package": "react"}), true},
+		{"no pin found", toolCallReply("pinned_version", map[string]any{"package": "left-pad"}), false},
+		{"not installed", toolCallReply("read_dependency_source", map[string]any{"package": "react"}), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			claim := map[string]any{"external_claim": true, "verified_by": []string{"t1"}}
+			cfg := AgentConfig{DependencyTools: []string{"pinned_version", "read_dependency_source"},
+				UnverifiableClaims: UnverifiableClaimsDowngrade, RepoRoot: repo, MaxIterations: 5}
+			res, err := RunAgentLoop(context.Background(), &scriptedChatter{replies: []string{c.call, findingsReply(t, wire("a.go", 5, "bug", "initial", claim))}}, cfg, exploreInitial)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lowered := res.Findings[0].Severity == "LOW"; lowered == c.confirmed {
+				t.Errorf("severity = %q, confirmed = %v", res.Findings[0].Severity, c.confirmed)
+			}
+		})
+	}
+}
+
 func TestDowngrade_UnconfirmedExternalClaimIsLoweredWithANote(t *testing.T) {
 	for name, claim := range map[string]map[string]any{
 		"no tool cited":     {"external_claim": true, "verified_by": []string{}},
@@ -300,14 +393,14 @@ func TestDowngrade_UnconfirmedExternalClaimIsLoweredWithANote(t *testing.T) {
 }
 
 func TestDowngrade_KeepsWhatAToolResultConfirmedOrThatClaimsNothingExternal(t *testing.T) {
-	read := toolCallReply("read_file", map[string]any{"path": "a.go"})
+	read := toolCallReply("lookup", map[string]any{})
 	for name, claim := range map[string]map[string]any{
 		"verified":     {"external_claim": true, "verified_by": []string{"t1"}},
 		"not external": {"external_claim": false, "verified_by": []string{}},
 		"flag missing": {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := downgradeRun(t, AgentConfig{}, wire("a.go", 5, "bug", "initial", claim), read)
+			res := downgradeRun(t, AgentConfig{ExtraTools: []Tool{evidenceTool("lookup", "documented", nil)}}, wire("a.go", 5, "bug", "initial", claim), read)
 			f := res.Findings[0]
 			if f.Severity != "HIGH" || strings.Contains(f.Body, "not verified") {
 				t.Errorf("finding = %+v, want it untouched", f)
@@ -321,8 +414,8 @@ func TestDowngrade_KeepsWhatAToolResultConfirmedOrThatClaimsNothingExternal(t *t
 
 func TestDowngrade_AnyConfirmingCallSuffices(t *testing.T) {
 	claim := map[string]any{"external_claim": true, "verified_by": []string{"t9", "t1"}}
-	res := downgradeRun(t, AgentConfig{}, wire("a.go", 5, "bug", "initial", claim),
-		toolCallReply("read_file", map[string]any{"path": "a.go"}))
+	res := downgradeRun(t, AgentConfig{ExtraTools: []Tool{evidenceTool("lookup", "documented", nil)}}, wire("a.go", 5, "bug", "initial", claim),
+		toolCallReply("lookup", map[string]any{}))
 	if res.Findings[0].Severity != "HIGH" {
 		t.Errorf("severity = %q, want HIGH kept", res.Findings[0].Severity)
 	}

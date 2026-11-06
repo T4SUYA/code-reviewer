@@ -28,11 +28,12 @@ func registerMCPTools(ctx context.Context, reg *ToolRegistry, servers []mcp.Serv
 		for _, info := range client.Tools() {
 			name := info.Name
 			err := reg.Register(Tool{
-				Name:            cfg.Name + "." + name,
-				Description:     textsafe.OneLine(info.Description, maxToolDescriptionRunes),
-				InputSchema:     schemaOrEmptyObject(info.InputSchema),
-				Timeout:         cfg.CallTimeout,
-				UntrustedOutput: true,
+				Name:             cfg.Name + "." + name,
+				Description:      textsafe.OneLine(info.Description, maxToolDescriptionRunes),
+				InputSchema:      schemaOrEmptyObject(info.InputSchema),
+				Timeout:          cfg.CallTimeout,
+				UntrustedOutput:  true,
+				ExternalEvidence: true,
 				Execute: func(ctx context.Context, args map[string]any) (string, error) {
 					return client.Call(ctx, name, args)
 				},

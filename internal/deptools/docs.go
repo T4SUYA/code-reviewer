@@ -12,6 +12,12 @@ import (
 	"unicode/utf8"
 )
 
+// Prefixes of the answers docs_lookup gives when the service has nothing.
+const (
+	noDocsPrefix     = "No documentation found"
+	noSnippetsPrefix = "No documentation snippets returned"
+)
+
 const docsContextPath = "/api/v2/context"
 
 func docsLookupSpec(opts Options) Spec {
@@ -23,9 +29,13 @@ func docsLookupSpec(opts Options) Spec {
 The library is a Context7 id such as /microsoft/playwright or /hashicorp/terraform-provider-google. Take the version from pinned_version.
 The topic is at most 80 characters of letters, digits, spaces and . _ - / (an identifier or option name, for example "browserContext.storageState indexedDB"). It is not free text and never code.
 Returns up to 8 KiB of documentation snippets.`,
-		InputSchema: objectSchema(map[string]any{"library": str, "version": str, "topic": str}, "library", "version", "topic"),
-		Timeout:     opts.RegistryTimeout * 2,
-		Untrusted:   true,
+		InputSchema:      objectSchema(map[string]any{"library": str, "version": str, "topic": str}, "library", "version", "topic"),
+		Timeout:          opts.RegistryTimeout * 2,
+		Untrusted:        true,
+		ExternalEvidence: true,
+		Inconclusive: func(out string) bool {
+			return strings.HasPrefix(out, noDocsPrefix) || strings.HasPrefix(out, noSnippetsPrefix)
+		},
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			library, _ := stringArg(args, "library")
 			version, _ := stringArg(args, "version")
@@ -79,14 +89,14 @@ func docsLookup(ctx context.Context, opts Options, library, version, topic strin
 	}
 	switch {
 	case status == http.StatusNotFound:
-		return fmt.Sprintf("No documentation found for %s. The library or that version may not be indexed; "+
+		return fmt.Sprintf(noDocsPrefix+" for %s. The library or that version may not be indexed; "+
 			"this says nothing about whether the API exists.", libraryID), nil
 	case status != http.StatusOK:
 		return "", fmt.Errorf("lookup failed (result unknown, not evidence that the API does not exist): docs service answered HTTP %d", status)
 	}
 	text := stripControl(strings.TrimSpace(string(body)))
 	if text == "" {
-		return fmt.Sprintf("No documentation snippets returned for %s and that topic.", libraryID), nil
+		return fmt.Sprintf(noSnippetsPrefix+" for %s and that topic.", libraryID), nil
 	}
 	return capUTF8(text, opts.DocsMaxOutputBytes), nil
 }

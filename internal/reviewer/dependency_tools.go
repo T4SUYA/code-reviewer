@@ -21,13 +21,15 @@ func registerDependencyTools(reg *ToolRegistry, cfg AgentConfig) error {
 	}
 	for _, s := range specs {
 		err := reg.Register(Tool{
-			Name:            s.Name,
-			Description:     s.Description,
-			Usage:           s.Usage,
-			InputSchema:     s.InputSchema,
-			Timeout:         s.Timeout,
-			UntrustedOutput: s.Untrusted,
-			Execute:         s.Execute,
+			Name:             s.Name,
+			Description:      s.Description,
+			Usage:            s.Usage,
+			InputSchema:      s.InputSchema,
+			Timeout:          s.Timeout,
+			UntrustedOutput:  s.Untrusted,
+			ExternalEvidence: s.ExternalEvidence,
+			Inconclusive:     s.Inconclusive,
+			Execute:          s.Execute,
 		})
 		if err != nil {
 			return fmt.Errorf("registering agent tool: %w", err)

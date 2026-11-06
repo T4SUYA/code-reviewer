@@ -18,6 +18,12 @@ import (
 	"github.com/OpticDiff/code-reviewer/internal/textsafe"
 )
 
+// Prefixes of the answers read_dependency_source gives when it found nothing.
+const (
+	notInstalledPrefix = "not installed:"
+	noSuchPathPrefix   = "no such path"
+)
+
 const (
 	maxSourceRead    = 32 << 10
 	maxSourceEntries = 200
@@ -33,8 +39,12 @@ func readDependencySourceSpec(opts Options) Spec {
 		Usage: `Args: {"package": "<npm name or Go module path>", "path": "<optional path inside the package>", "start_line": <optional int>, "end_line": <optional int>}
 Without a path, lists the package's top-level files. A directory path lists it. Max 32 KiB returned; up to 200 directory entries.
 Answers "not installed" when the checkout has no copy of the package; that says nothing about whether the package or its API exists.`,
-		InputSchema: objectSchema(map[string]any{"package": str, "path": str, "start_line": integer, "end_line": integer}, "package"),
-		Untrusted:   true,
+		InputSchema:      objectSchema(map[string]any{"package": str, "path": str, "start_line": integer, "end_line": integer}, "package"),
+		Untrusted:        true,
+		ExternalEvidence: true,
+		Inconclusive: func(out string) bool {
+			return strings.HasPrefix(out, notInstalledPrefix) || strings.HasPrefix(out, noSuchPathPrefix)
+		},
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pkg, ok := stringArg(args, "package")
 			if !ok || pkg == "" {
@@ -68,7 +78,7 @@ func readDependencySource(ctx context.Context, opts Options, pkg, rel string, st
 		return "", err
 	}
 	if !ok {
-		return fmt.Sprintf("not installed: %q has no copy under node_modules or in the Go module cache of this checkout. "+
+		return fmt.Sprintf(notInstalledPrefix+" %q has no copy under node_modules or in the Go module cache of this checkout. "+
 			"This says nothing about whether the package or its API exists.", pkg), nil
 	}
 	target, err := confinedPath(dir, rel)
@@ -78,7 +88,7 @@ func readDependencySource(ctx context.Context, opts Options, pkg, rel string, st
 	info, err := os.Stat(target)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Sprintf("no such path %q in the installed copy of %q", rel, pkg), nil
+			return fmt.Sprintf(noSuchPathPrefix+" %q in the installed copy of %q", rel, pkg), nil
 		}
 		return "", fmt.Errorf("failed to read: %v", err)
 	}

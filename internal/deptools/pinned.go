@@ -17,6 +17,9 @@ import (
 	"github.com/OpticDiff/code-reviewer/internal/textsafe"
 )
 
+// noPinPrefix starts the answer pinned_version gives when no file pins the package.
+const noPinPrefix = "No pin for "
+
 const (
 	maxPinFileBytes = 16 << 20
 	maxPinWalkDepth = 5
@@ -46,8 +49,10 @@ func pinnedVersionSpec(opts Options) Spec {
 Package forms: npm "react" or "@scope/name"; PyPI "requests"; Go module path; Maven "group:artifact"; Terraform provider "hashicorp/google".
 Runtimes: "node", "python" and "go" read .nvmrc, engines, .python-version, requires-python and the go directive.
 Reads package-lock.json, pnpm-lock.yaml, yarn.lock, package.json, go.mod, go.sum, uv.lock, poetry.lock, requirements*.txt, pyproject.toml, pom.xml, gradle.lockfile and .terraform.lock.hcl.`,
-		InputSchema: objectSchema(map[string]any{"package": str, "ecosystem": str}, "package"),
-		Untrusted:   true,
+		InputSchema:      objectSchema(map[string]any{"package": str, "ecosystem": str}, "package"),
+		Untrusted:        true,
+		ExternalEvidence: true,
+		Inconclusive:     func(out string) bool { return strings.HasPrefix(out, noPinPrefix) },
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pkg, ok := stringArg(args, "package")
 			if !ok || pkg == "" {
@@ -91,7 +96,7 @@ func pinnedVersion(ctx context.Context, root, pkg, eco string) (string, error) {
 		}
 	}
 	if len(pins) == 0 {
-		return fmt.Sprintf("No pin for %q found in %d lockfile or manifest file(s) of the checkout. "+
+		return fmt.Sprintf(noPinPrefix+"%q found in %d lockfile or manifest file(s) of the checkout. "+
 			"That does not mean the package is unused: it may be pinned elsewhere or not installed from a lockfile.", pkg, scanned), nil
 	}
 	sort.SliceStable(pins, func(i, j int) bool { return pins[i].file < pins[j].file })

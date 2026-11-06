@@ -18,6 +18,9 @@ type ToolResult struct {
 	ID     string `json:"id,omitempty"` // Set when the loop tracks tool calls so findings can cite them.
 	Output string `json:"output"`
 	Error  string `json:"error,omitempty"`
+	// Confirms is set when the tool is an external-evidence tool and its
+	// answer is conclusive. It is not shown to the model.
+	Confirms bool `json:"-"`
 }
 
 // Tool is one capability the agent loop can call. The registry offers it to
@@ -43,6 +46,14 @@ type Tool struct {
 	// reviewer. The registry wraps it in a tag the prompt explains, so the
 	// model reads it as evidence and not as instructions.
 	UntrustedOutput bool
+	// ExternalEvidence marks tools whose conclusive answer can confirm a fact
+	// about something outside the repository (a dependency tool, an MCP
+	// tool). Only calls to such tools can back an external claim.
+	ExternalEvidence bool
+	// Inconclusive reports whether an answer says only that the tool found
+	// nothing. Such an answer confirms nothing. Nil means every non-empty
+	// answer is conclusive.
+	Inconclusive func(output string) bool
 	// Execute runs the tool.
 	Execute func(ctx context.Context, args map[string]any) (string, error)
 }
@@ -131,10 +142,11 @@ func (r *ToolRegistry) Execute(ctx context.Context, tool string, args map[string
 		}
 		return ToolResult{Tool: tool, Error: msg}
 	}
+	confirms := t.ExternalEvidence && strings.TrimSpace(out) != "" && (t.Inconclusive == nil || !t.Inconclusive(out))
 	if t.UntrustedOutput {
 		out = wrapUntrusted(tool, out)
 	}
-	return ToolResult{Tool: tool, Output: out}
+	return ToolResult{Tool: tool, Output: out, Confirms: confirms}
 }
 
 const untrustedTag = "untrusted_tool_output"

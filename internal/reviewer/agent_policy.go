@@ -106,6 +106,9 @@ type toolCall struct {
 	tool string
 	args map[string]any
 	ok   bool
+	// confirms is true when the call ran an external-evidence tool and its
+	// answer was conclusive.
+	confirms bool
 	// span is the lines of the file a successful read_file call returned.
 	span lineSpan
 }
@@ -120,7 +123,7 @@ func newToolCallLog() *toolCallLog { return &toolCallLog{calls: map[string]toolC
 // record stores a call and its result and returns its id ("t1", "t2", ...).
 func (l *toolCallLog) record(tool string, args map[string]any, res ToolResult) string {
 	id := fmt.Sprintf("t%d", len(l.calls)+1)
-	c := toolCall{tool: tool, args: args, ok: res.Error == ""}
+	c := toolCall{tool: tool, args: args, ok: res.Error == "", confirms: res.Confirms}
 	if c.ok && tool == toolReadFile {
 		c.span = readFileSpan(args, res.Output)
 	}
@@ -153,10 +156,14 @@ func readFileSpan(args map[string]any, output string) lineSpan {
 	return lineSpan{start: start, end: start + lines - 1}
 }
 
-// anySucceeded reports whether any of the ids names a tool call that returned a result.
-func (l *toolCallLog) anySucceeded(ids []string) bool {
+// anyConfirms reports whether any of the ids names a call to a dependency or
+// MCP tool that gave a conclusive answer. A call that only found nothing
+// ("not installed", "no pin found", "package exists: no", "no documentation
+// found"), a failed call, and a call to a repository tool do not count: none
+// of them confirms a fact about something outside the repository.
+func (l *toolCallLog) anyConfirms(ids []string) bool {
 	for _, id := range ids {
-		if c, found := l.calls[strings.TrimSpace(id)]; found && c.ok {
+		if c, found := l.calls[strings.TrimSpace(id)]; found && c.ok && c.confirms {
 			return true
 		}
 	}
@@ -232,7 +239,7 @@ func partitionByInitial(initial []model.Finding, returned []refinedFinding) (mat
 // It reports whether the finding was lowered.
 func (p agentPolicy) applyClaimPolicy(r refinedFinding, calls *toolCallLog) (model.Finding, bool) {
 	f := r.Finding
-	if !p.downgrade || r.ExternalClaim == nil || !*r.ExternalClaim || calls.anySucceeded(r.VerifiedBy) {
+	if !p.downgrade || r.ExternalClaim == nil || !*r.ExternalClaim || calls.anyConfirms(r.VerifiedBy) {
 		return f, false
 	}
 	if !strings.Contains(f.Body, unverifiedClaimNote) {
