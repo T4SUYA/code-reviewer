@@ -216,11 +216,12 @@ type Config struct {
 	MaxTokens int // Maximum total tokens per review (0 = unlimited).
 
 	// Agent refinement loop.
-	AgentLoop          bool          // Enable agent refinement loop.
-	AgentMaxIterations int           // Max refinement iterations (default 3).
-	AgentTimeout       time.Duration // Wall-clock timeout for agent loop (default 3m).
-	AgentMCPServers    []AgentMCPServer // MCP servers whose tools the agent loop may call (default none).
-	AgentScope         string        // Findings the agent loop examines: "all" (default) or "high_severity_only".
+	AgentLoop          bool             // Enable agent refinement loop.
+	AgentMaxIterations int              // Max refinement iterations (default 3).
+	AgentTimeout       time.Duration    // Wall-clock timeout for agent loop (default 3m).
+	AgentMCPServers    []AgentMCPServer // MCP servers whose tools the agent loop may call (default none); operator config only.
+	OperatorConfig     string           // Path of the operator-trusted config file (--operator-config).
+	AgentScope         string           // Findings the agent loop examines: "all" (default) or "high_severity_only".
 
 	// Scope enforcement.
 	MaxFiles    int
@@ -307,7 +308,6 @@ type repoConfig struct {
 	AgentMaxIterations       int      `yaml:"agent_max_iterations"`
 	AgentTimeout             string   `yaml:"agent_timeout"`
 	AgentScope               string   `yaml:"agent_scope"`
-	AgentMCPServers          []rawAgentMCPServer `yaml:"agent_mcp_servers"`
 
 	IntentChecks *model.IntentChecks `yaml:"intent_checks"`
 }
@@ -369,6 +369,12 @@ func Load() (*Config, error) {
 
 	// Auto-detect CI environment.
 	cfg.loadCIEnv()
+
+	// Operator-trusted settings: user config file and --operator-config.
+	// Never read from the repository config.
+	if err := cfg.loadOperatorConfig(); err != nil {
+		return nil, err
+	}
 
 	// Layer 4: Platform configuration and guidelines.
 	// Always loaded — even for product profile, rule names are needed
@@ -497,6 +503,7 @@ func (c *Config) applyRepoConfig(data []byte) error {
 		if _, ok := raw["profile"]; ok {
 			slog.Warn("ignoring 'profile' in .code-reviewer.yaml: profiles are controlled by CI config, not repo-level files")
 		}
+		warnOperatorOnlyKeys(raw)
 	}
 
 	if rc.Model != "" {
@@ -660,14 +667,7 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.AgentScope != "" {
 		c.AgentScope = rc.AgentScope
 	}
-	for _, raw := range rc.AgentMCPServers {
-		server, err := raw.parse()
-		if err != nil {
-			return err
-		}
-		c.AgentMCPServers = append(c.AgentMCPServers, server)
-	}
-	return validateAgentMCPServers(c.AgentMCPServers)
+	return nil
 }
 
 func (c *Config) loadEnv() {
@@ -961,6 +961,7 @@ func (c *Config) loadFlags() error {
 	productModel := fs.String("product-model", "", "Model override when --profile=product")
 	platformVisibility := fs.String("platform-visibility", "", "Platform findings visibility: public (default) or security-team-only")
 
+	operatorConfig := fs.String("operator-config", "", "Operator-trusted config file for settings the repository config may not set (agent_mcp_servers)")
 	agent := fs.Bool("agent", false, "Enable agent refinement loop")
 	agentIterations := fs.Int("agent-iterations", 3, "Max agent refinement iterations")
 	agentTimeout := fs.Duration("agent-timeout", 3*time.Minute, "Agent loop timeout")
@@ -1167,6 +1168,9 @@ func (c *Config) loadFlags() error {
 	}
 	if *platformVisibility != "" {
 		c.PlatformVisibility = *platformVisibility
+	}
+	if *operatorConfig != "" {
+		c.OperatorConfig = *operatorConfig
 	}
 	// Agent flags: apply only when explicitly set, so YAML defaults survive.
 	fs.Visit(func(f *flag.Flag) {

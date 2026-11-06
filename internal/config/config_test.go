@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 	"testing/quick"
+	"time"
 )
 
 // TestParseSeverity_AllLevels is a table-driven test covering all valid
@@ -1470,7 +1470,6 @@ func TestLoad_AgentScope(t *testing.T) {
 	}
 }
 
-
 // TestLoad_Temperature verifies the optional sampling temperature is unset by
 // default and can be set from env, with the flag taking precedence.
 func TestLoad_Temperature(t *testing.T) {
@@ -1868,7 +1867,6 @@ func TestLoad_AutoFixRemote(t *testing.T) {
 	}
 }
 
-
 func TestLoad_ThinkingLevel(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1929,8 +1927,57 @@ func TestParseThinkingLevel(t *testing.T) {
 	}
 }
 
-func TestLoad_AgentMCPServers(t *testing.T) {
-	cfg, err := loadWithAgentScope(t, `agent_mcp_servers:
+// loadWithOperatorConfig runs Load() in a fresh checkout whose
+// .code-reviewer.yaml holds repoYAML and whose operator config (passed with
+// --operator-config) holds operatorYAML, stored in dir: pass the checkout
+// itself to place it inside the checkout. It returns the checkout path too.
+func loadWithOperatorConfig(t *testing.T, repoYAML, operatorYAML string, inCheckout bool, args ...string) (*Config, error) {
+	t.Helper()
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv(operatorConfigEnv, "")
+
+	checkout := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkout, ".git"), 0o755); err != nil {
+		t.Fatalf("creating .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, ".code-reviewer.yaml"), []byte(repoYAML), 0o644); err != nil {
+		t.Fatalf("writing repo yaml: %v", err)
+	}
+	os.Args = append([]string{"code-reviewer"}, args...)
+	if len(args) == 0 {
+		os.Args = append(os.Args, "--diff")
+	} else {
+		t.Setenv("CI_PROJECT_ID", "1")
+		t.Setenv("CI_MERGE_REQUEST_IID", "1")
+		t.Setenv("GITLAB_TOKEN", "test-token")
+	}
+	if operatorYAML != "" {
+		dir := t.TempDir()
+		if inCheckout {
+			dir = checkout
+		}
+		path := filepath.Join(dir, "operator.yaml")
+		if err := os.WriteFile(path, []byte(operatorYAML), 0o644); err != nil {
+			t.Fatalf("writing operator yaml: %v", err)
+		}
+		os.Args = append(os.Args, "--operator-config", path)
+	}
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(oldDir) }) //nolint:errcheck
+	if err := os.Chdir(checkout); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	return Load()
+}
+
+const docsServerYAML = `agent_mcp_servers:
   - name: docs
     command: docs-mcp
     args: ["--stdio"]
@@ -1938,7 +1985,10 @@ func TestLoad_AgentMCPServers(t *testing.T) {
     tools_allowlist: [lookup]
     call_timeout: 10s
     max_output_bytes: 4096
-`)
+`
+
+func TestLoad_AgentMCPServersFromOperatorConfig(t *testing.T) {
+	cfg, err := loadWithOperatorConfig(t, "agent_scope: all\n", docsServerYAML, false)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -1951,9 +2001,89 @@ func TestLoad_AgentMCPServers(t *testing.T) {
 		t.Errorf("AgentMCPServers = %+v, want [%+v]", cfg.AgentMCPServers, want)
 	}
 
-	cfg, err = loadWithAgentScope(t, "agent_scope: all\n")
+	cfg, err = loadWithOperatorConfig(t, "agent_scope: all\n", "", false)
 	if err != nil || len(cfg.AgentMCPServers) != 0 {
 		t.Errorf("no agent_mcp_servers: got %+v, %v; want none (off by default)", cfg.AgentMCPServers, err)
+	}
+}
+
+func TestLoad_AgentMCPServersIgnoredInRepoConfig(t *testing.T) {
+	for _, args := range [][]string{nil, {"--ci"}} {
+		cfg, err := loadWithOperatorConfig(t, docsServerYAML, "", false, args...)
+		if err != nil {
+			t.Fatalf("Load %v: %v", args, err)
+		}
+		if len(cfg.AgentMCPServers) != 0 {
+			t.Errorf("args %v: repo .code-reviewer.yaml set AgentMCPServers = %+v, want none", args, cfg.AgentMCPServers)
+		}
+	}
+}
+
+func TestLoad_AgentMCPServersRepoConfigCannotAddToOperatorServers(t *testing.T) {
+	repo := "agent_mcp_servers:\n  - {name: evil, command: sh}\n"
+	cfg, err := loadWithOperatorConfig(t, repo, docsServerYAML, false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AgentMCPServers) != 1 || cfg.AgentMCPServers[0].Name != "docs" {
+		t.Errorf("AgentMCPServers = %+v, want only the operator's docs server", cfg.AgentMCPServers)
+	}
+}
+
+func TestLoad_OperatorConfigInsideCheckoutIgnoredInCI(t *testing.T) {
+	cfg, err := loadWithOperatorConfig(t, "", docsServerYAML, true, "--ci")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AgentMCPServers) != 0 {
+		t.Errorf("operator config inside the CI checkout applied: %+v", cfg.AgentMCPServers)
+	}
+	cfg, err = loadWithOperatorConfig(t, "", docsServerYAML, true)
+	if err != nil || len(cfg.AgentMCPServers) != 1 {
+		t.Errorf("outside CI an operator config in the working tree should apply: %+v, %v", cfg.AgentMCPServers, err)
+	}
+}
+
+func TestLoad_OperatorConfigFromEnvAndUserFile(t *testing.T) {
+	cfg, err := loadWithOperatorConfig(t, "", "", false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AgentMCPServers) != 0 {
+		t.Fatalf("unexpected servers %+v", cfg.AgentMCPServers)
+	}
+
+	envFile := filepath.Join(t.TempDir(), "op.yaml")
+	if err := os.WriteFile(envFile, []byte(docsServerYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	userHome := t.TempDir()
+	userDir := filepath.Join(userHome, "code-reviewer")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "config.yaml"),
+		[]byte("agent_mcp_servers:\n  - {name: local, command: x}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"code-reviewer", "--diff"}
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+	t.Setenv(operatorConfigEnv, envFile)
+	t.Setenv("XDG_CONFIG_HOME", userHome)
+	oldDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(oldDir) }) //nolint:errcheck
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AgentMCPServers) != 2 || cfg.AgentMCPServers[0].Name != "local" || cfg.AgentMCPServers[1].Name != "docs" {
+		t.Errorf("AgentMCPServers = %+v, want user file then env file servers", cfg.AgentMCPServers)
 	}
 }
 
@@ -1967,7 +2097,7 @@ func TestLoad_AgentMCPServersRejectsInvalidEntries(t *testing.T) {
 		"negative timout": "agent_mcp_servers:\n  - {name: docs, command: x, call_timeout: -1s}\n",
 		"negative cap":    "agent_mcp_servers:\n  - {name: docs, command: x, max_output_bytes: -1}\n",
 	} {
-		if _, err := loadWithAgentScope(t, body); err == nil {
+		if _, err := loadWithOperatorConfig(t, "", body, false); err == nil {
 			t.Errorf("%s: Load succeeded, want an error", name)
 		}
 	}
