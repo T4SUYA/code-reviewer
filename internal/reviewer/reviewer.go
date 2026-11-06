@@ -1156,6 +1156,63 @@ func readFileFromRef(ctx context.Context, ref, filename string) string {
 	return content
 }
 
+// LoadLearnings reads the learnings file named by cfg.LearningsPath. In CI mode
+// a file inside the repository checkout is read from the trusted base ref, like
+// REVIEW.md, so a contributor cannot change the entries through the change under
+// review; a file outside the checkout (an absolute path supplied by the
+// operator) is read as-is. A file missing at the base ref yields no entries.
+func LoadLearnings(ctx context.Context, cfg *config.Config) ([]learnings.Entry, error) {
+	if cfg.LearningsPath == "" {
+		return nil, nil
+	}
+	if !cfg.CIMode {
+		return learnings.Load(cfg.LearningsPath)
+	}
+	rel, inCheckout := checkoutRelativePath(cfg.LearningsPath)
+	if !inCheckout {
+		return learnings.Load(cfg.LearningsPath)
+	}
+	if cfg.CIDiffBaseSHA == "" {
+		slog.Warn("CI mode active but CIDiffBaseSHA is empty; ignoring unverified checkout learnings file", "file", cfg.LearningsPath)
+		return nil, nil
+	}
+	content := readFileFromRef(ctx, cfg.CIDiffBaseSHA, rel)
+	if len(content) > learnings.MaxFileBytes {
+		return nil, fmt.Errorf("learnings file %s is larger than %d bytes", cfg.LearningsPath, learnings.MaxFileBytes)
+	}
+	entries, err := learnings.Parse([]byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("learnings file %s at the base ref: %w", cfg.LearningsPath, err)
+	}
+	return entries, nil
+}
+
+// checkoutRelativePath returns the slash-separated path of p relative to the
+// repository root and whether p lies inside the checkout.
+func checkoutRelativePath(p string) (string, bool) {
+	root := findRepoRoot()
+	if root == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", false
+	}
+	// Resolve symlinks through the directory so a file that does not exist
+	// still compares against the resolved repository root.
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		abs = filepath.Join(dir, filepath.Base(abs))
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
 // readReviewMDFromRef reads REVIEW.md from a specific git ref (e.g. base commit SHA).
 // Returns empty string if the file doesn't exist at that ref or git fails.
 func readReviewMDFromRef(ctx context.Context, ref string) string {

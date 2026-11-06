@@ -2,6 +2,9 @@ package reviewer
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +109,81 @@ func TestRun_CacheReplayDependsOnLearnings(t *testing.T) {
 				t.Errorf("model calls = %d, want %d", second.calls, tt.wantCalls)
 			}
 		})
+	}
+}
+
+func entryTitles(entries []learnings.Entry) []string {
+	var titles []string
+	for _, e := range entries {
+		titles = append(titles, e.Title)
+	}
+	return titles
+}
+
+// In CI a learnings file inside the checkout comes from the base ref, so the
+// copy a contributor edits in the working tree is ignored; a file outside the
+// checkout is read as given.
+func TestLoadLearnings_TrustBoundary(t *testing.T) {
+	repo := t.TempDir()
+	gitIn(t, repo, "init", "-q")
+	file := filepath.Join(repo, "learnings.yaml")
+	if err := os.WriteFile(file, []byte("- title: from-base\n  reason: r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", ".")
+	gitIn(t, repo, "commit", "-q", "-m", "base")
+	base := gitIn(t, repo, "rev-parse", "HEAD")
+	if err := os.WriteFile(file, []byte("- title: from-working-tree\n  reason: r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "learnings.yaml")
+	if err := os.WriteFile(outside, []byte("- title: from-outside\n  reason: r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want []string
+	}{
+		{"CI reads the checkout file from the base ref", config.Config{CIMode: true, CIDiffBaseSHA: base, LearningsPath: "learnings.yaml"}, []string{"from-base"}},
+		{"CI reads an absolute path inside the checkout from the base ref", config.Config{CIMode: true, CIDiffBaseSHA: base, LearningsPath: file}, []string{"from-base"}},
+		{"CI reads a path outside the checkout as-is", config.Config{CIMode: true, CIDiffBaseSHA: base, LearningsPath: outside}, []string{"from-outside"}},
+		{"CI without a base ref ignores the checkout file", config.Config{CIMode: true, LearningsPath: "learnings.yaml"}, nil},
+		{"CI file absent at the base ref has no entries", config.Config{CIMode: true, CIDiffBaseSHA: base, LearningsPath: "new-file.yaml"}, nil},
+		{"outside CI reads the working tree", config.Config{LearningsPath: "learnings.yaml"}, []string{"from-working-tree"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := LoadLearnings(context.Background(), &tt.cfg)
+			if err != nil {
+				t.Fatalf("LoadLearnings: %v", err)
+			}
+			if !reflect.DeepEqual(entryTitles(got), tt.want) {
+				t.Errorf("titles = %v, want %v", entryTitles(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadLearnings_BaseRefFileIsValidated(t *testing.T) {
+	repo := t.TempDir()
+	gitIn(t, repo, "init", "-q")
+	if err := os.WriteFile(filepath.Join(repo, "learnings.yaml"), []byte("- title: missing-reason\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", ".")
+	gitIn(t, repo, "commit", "-q", "-m", "base")
+	t.Chdir(repo)
+	cfg := config.Config{CIMode: true, CIDiffBaseSHA: gitIn(t, repo, "rev-parse", "HEAD"), LearningsPath: "learnings.yaml"}
+	if _, err := LoadLearnings(context.Background(), &cfg); err == nil || !strings.Contains(err.Error(), "reason is required") {
+		t.Errorf("err = %v, want a validation error", err)
+	}
+}
+
+func TestLoadLearnings_UnsetPathLoadsNothing(t *testing.T) {
+	if got, err := LoadLearnings(context.Background(), &config.Config{}); err != nil || got != nil {
+		t.Errorf("got %v, %v; want nothing", got, err)
 	}
 }
