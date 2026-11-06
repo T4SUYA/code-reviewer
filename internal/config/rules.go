@@ -239,6 +239,12 @@ func ruleMatchesAnyFile(patterns, filePaths []string) bool {
 	return false
 }
 
+// MatchPathPattern reports whether the glob pattern (supporting **) matches the
+// file path or its base name.
+func MatchPathPattern(pattern, fp string) bool {
+	return matchPathPattern(pattern, fp)
+}
+
 func matchPathPattern(pattern, fp string) bool {
 	base := filepath.Base(fp)
 	// Standard filepath.Match against full path and basename
