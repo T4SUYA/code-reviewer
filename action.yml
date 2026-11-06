@@ -67,6 +67,26 @@ inputs:
     description: "Findings the agent loop examines (all or high_severity_only)"
     required: false
     default: ""
+  agent-tools:
+    description: "Dependency tools the agent loop may call, comma-separated: pinned_version, registry_lookup, read_dependency_source, docs_lookup"
+    required: false
+    default: ""
+  agent-mode:
+    description: "Agent loop mode: refine (may only drop or modify findings) or explore (may also add findings backed by tool evidence)"
+    required: false
+    default: ""
+  agent-max-added:
+    description: "Findings the agent loop may add per run in explore mode"
+    required: false
+    default: ""
+  agent-added-max-severity:
+    description: "Highest severity a finding added in explore mode keeps: low, medium, high or critical (default medium)"
+    required: false
+    default: ""
+  unverifiable-claims:
+    description: "Findings asserting an unconfirmed fact about something outside the repository: keep or downgrade"
+    required: false
+    default: ""
   incremental:
     description: "Only review files changed in the latest push (true or false)"
     required: false
@@ -197,6 +217,11 @@ runs:
         INPUT_THINKING_LEVEL: ${{ inputs.thinking-level }}
         INPUT_AGENT: ${{ inputs.agent }}
         INPUT_AGENT_SCOPE: ${{ inputs.agent-scope }}
+        INPUT_AGENT_TOOLS: ${{ inputs.agent-tools }}
+        INPUT_AGENT_MODE: ${{ inputs.agent-mode }}
+        INPUT_AGENT_MAX_ADDED: ${{ inputs.agent-max-added }}
+        INPUT_AGENT_ADDED_MAX_SEVERITY: ${{ inputs.agent-added-max-severity }}
+        INPUT_UNVERIFIABLE_CLAIMS: ${{ inputs.unverifiable-claims }}
         INPUT_INCREMENTAL: ${{ inputs.incremental }}
         INPUT_AUTO_APPROVE: ${{ inputs.auto-approve }}
         INPUT_AUTO_FIX_REMOTE: ${{ inputs.auto-fix-remote }}
@@ -236,6 +261,11 @@ runs:
         [ -n "${INPUT_THINKING_LEVEL}" ] && ARGS+=(--thinking-level "${INPUT_THINKING_LEVEL}")
         [ "${INPUT_AGENT}" = "true" ] && ARGS+=(--agent)
         [ -n "${INPUT_AGENT_SCOPE}" ] && ARGS+=(--agent-scope "${INPUT_AGENT_SCOPE}")
+        [ -n "${INPUT_AGENT_TOOLS}" ] && ARGS+=(--agent-tools "${INPUT_AGENT_TOOLS}")
+        [ -n "${INPUT_AGENT_MODE}" ] && ARGS+=(--agent-mode "${INPUT_AGENT_MODE}")
+        [ -n "${INPUT_AGENT_MAX_ADDED}" ] && ARGS+=(--agent-max-added "${INPUT_AGENT_MAX_ADDED}")
+        [ -n "${INPUT_AGENT_ADDED_MAX_SEVERITY}" ] && ARGS+=(--agent-added-max-severity "${INPUT_AGENT_ADDED_MAX_SEVERITY}")
+        [ -n "${INPUT_UNVERIFIABLE_CLAIMS}" ] && ARGS+=(--unverifiable-claims "${INPUT_UNVERIFIABLE_CLAIMS}")
         [ "${INPUT_INCREMENTAL}" = "true" ] && ARGS+=(--incremental)
         [ "${INPUT_AUTO_APPROVE}" = "true" ] && ARGS+=(--auto-approve)
         [ "${INPUT_AUTO_FIX_REMOTE}" = "true" ] && ARGS+=(--auto-fix-remote)

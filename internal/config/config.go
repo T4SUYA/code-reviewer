@@ -992,6 +992,7 @@ func (c *Config) loadFlags() error {
 	agentIterations := fs.Int("agent-iterations", 3, "Max agent refinement iterations")
 	agentTimeout := fs.Duration("agent-timeout", 3*time.Minute, "Agent loop timeout")
 	agentScope := fs.String("agent-scope", "", "Findings the agent loop examines: all (default) or high_severity_only")
+	agentTools := fs.String("agent-tools", "", "Dependency tools the agent loop may call, comma-separated: pinned_version, registry_lookup, read_dependency_source, docs_lookup")
 	agentMode := fs.String("agent-mode", "", "Agent loop mode: refine (default, may only drop or modify findings) or explore (may also add findings backed by tool evidence)")
 	agentMaxAdded := fs.Int("agent-max-added", 5, "Findings the agent loop may add per run in explore mode")
 	agentAddedMaxSeverity := fs.String("agent-added-max-severity", "", "Highest severity a finding the agent loop adds in explore mode keeps: low, medium (default), high or critical")
@@ -1213,6 +1214,8 @@ func (c *Config) loadFlags() error {
 			c.AgentTimeout = *agentTimeout
 		case "agent-scope":
 			c.AgentScope = *agentScope
+		case "agent-tools":
+			c.AgentTools = splitAndTrim(*agentTools)
 		case "agent-mode":
 			c.AgentMode = *agentMode
 		case "agent-max-added":

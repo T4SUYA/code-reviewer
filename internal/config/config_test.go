@@ -2272,3 +2272,16 @@ func TestLoad_AgentAddedMaxSeverity(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_AgentToolsFlagOverridesYAML(t *testing.T) {
+	cfg, err := loadWithAgentScope(t, "agent_tools: [registry_lookup]\n", "--agent-tools", "pinned_version, read_dependency_source")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := strings.Join(cfg.AgentTools, ","); got != "pinned_version,read_dependency_source" {
+		t.Errorf("AgentTools = %s", got)
+	}
+	if _, err := loadWithAgentScope(t, "", "--agent-tools", "web_search"); err == nil {
+		t.Error("an unknown tool name from the flag was accepted")
+	}
+}
