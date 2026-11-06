@@ -392,8 +392,10 @@ func TestWithPromptProfile_ReplacesOnlyTheStanceLine(t *testing.T) {
 			if strings.Contains(got, "When in doubt, DO NOT flag it") {
 				t.Error("precision stance still present")
 			}
-			if want := strings.Replace(base, precisionStance, promptProfileStances[profile], 1); got != want {
-				t.Error("prompt differs from the base outside the stance line")
+			want := strings.Replace(base, precisionStance, promptProfileStances[profile], 1)
+			want = strings.Replace(want, precisionZeroIsFine, nonPrecisionZeroIsFine, 1)
+			if got != want {
+				t.Error("prompt differs from the base outside the stance and empty-review lines")
 			}
 			if !strings.Contains(got, "ZERO IS FINE") || !strings.Contains(got, "## OUTPUT FORMAT") {
 				t.Error("surrounding rules were lost")
@@ -441,6 +443,27 @@ func TestWithPromptProfile_ComposesWithConfidenceFloor(t *testing.T) {
 		}
 		if strings.Contains(got, "below 80%") {
 			t.Errorf("profile %q: default floor left behind", profile)
+		}
+	}
+}
+
+func TestWithPromptProfile_EmptyReviewLineMatchesStance(t *testing.T) {
+	base := BuildPrompt(nil, "")
+	if !strings.Contains(base, precisionZeroIsFine) {
+		t.Fatal("default prompt lacks the precision empty-review line")
+	}
+	for _, profile := range []string{"balanced", "recall"} {
+		got := WithPromptProfile(base, profile)
+		if strings.Contains(got, "perfectly valid review") {
+			t.Errorf("%s: precision empty-review wording still present", profile)
+		}
+		if !strings.Contains(got, "valid only if nothing suspicious remains after you investigated") {
+			t.Errorf("%s: reworded empty-review line missing", profile)
+		}
+	}
+	for _, profile := range []string{"", "precision"} {
+		if got := WithPromptProfile(base, profile); !strings.Contains(got, precisionZeroIsFine) {
+			t.Errorf("%s: precision empty-review line changed", profile)
 		}
 	}
 }

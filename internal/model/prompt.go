@@ -10,6 +10,10 @@ import (
 // review is. PromptProfile "precision" keeps it; the other profiles replace it.
 const precisionStance = "* PRECISION: When in doubt, DO NOT flag it. A false positive wastes more developer time than a missed nit. Only flag issues you are confident are genuine problems. If you would rate your confidence below 80%, omit the finding."
 
+// precisionZeroIsFine is the built-in prompt line about empty reviews. The
+// balanced and recall profiles replace it so it does not contradict their stance.
+const precisionZeroIsFine = "* ZERO IS FINE: An empty findings array is a perfectly valid review. Not every diff has issues. Do not manufacture findings to appear thorough."
+
 // basePrompt is adapted from Google's code-review-commons SKILL.md (Apache 2.0).
 // See: https://github.com/gemini-cli-extensions/code-review/blob/main/skills/code-review-commons/SKILL.md
 const basePrompt = `## PERSONA
@@ -30,7 +34,7 @@ STRICTLY follow these rules for review comments:
 * FOCUS ON ADDITIONS: Concentrate on lines starting with '+' (new code). Removed code ('-') is in scope only when the removal itself introduces a defect, such as a deleted guard, validation, permission check, or a test that is deleted while the code it covers remains. Report that with "old_line" (see OUTPUT FORMAT) instead of "line".
 * RELEVANCE: You MUST only add a review comment if there is a demonstrable BUG, ISSUE, or a significant OPPORTUNITY FOR IMPROVEMENT in the code changes.
 ` + precisionStance + `
-* ZERO IS FINE: An empty findings array is a perfectly valid review. Not every diff has issues. Do not manufacture findings to appear thorough.
+` + precisionZeroIsFine + `
 * TONE/CONTENT: DO NOT add comments that:
     * Tell the user to "check," "confirm," "verify," or "ensure" something.
     * Explain what the code change does or validate its purpose.
@@ -151,8 +155,12 @@ var promptProfileStances = map[string]string{
 	"recall": "* RECALL: Investigate every suspicious pattern in the changed lines (error paths, boundaries, concurrency, resource handling, removed guards) and report each one that could be a real defect, stating an honest confidence rather than rounding it up or down. Do not drop a finding because it is uncertain; the confidence threshold decides what is kept. If you would rate your confidence below 80%, omit the finding.",
 }
 
+// nonPrecisionZeroIsFine replaces precisionZeroIsFine for the balanced and
+// recall profiles.
+const nonPrecisionZeroIsFine = "* ZERO IS FINE: An empty findings array is valid only if nothing suspicious remains after you investigated the changed lines. Do not manufacture findings to appear thorough."
+
 // WithPromptProfile replaces the precision stance line of a built prompt with
-// the stance of the given profile. An empty profile or "precision" returns the
+// the stance of the given profile, and rewords the empty-review line to match. An empty profile or "precision" returns the
 // prompt unchanged, as do custom prompts that do not contain the built-in line.
 // Apply it before WithConfidenceFloor.
 func WithPromptProfile(prompt, profile string) string {
@@ -160,7 +168,8 @@ func WithPromptProfile(prompt, profile string) string {
 	if !ok {
 		return prompt
 	}
-	return strings.Replace(prompt, precisionStance, stance, 1)
+	prompt = strings.Replace(prompt, precisionStance, stance, 1)
+	return strings.Replace(prompt, precisionZeroIsFine, nonPrecisionZeroIsFine, 1)
 }
 
 // WithConfidenceFloor rewrites the confidence threshold sentence of a built
