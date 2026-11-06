@@ -269,17 +269,16 @@ func partitionByInitial(initial []model.Finding, returned []refinedFinding) (mat
 }
 
 // applyClaimPolicy enforces unverifiable_claims on one finding from its
-// structured claim (see judged). A finding that does not say it is free of
-// external claims, and cites no conclusive dependency or MCP call, is treated
-// as an unconfirmed external claim: it is lowered to the lowest reported
-// severity and gets the note, and one whose severity a rule fixes keeps it and
-// gets the note only. Treating an unclassified finding this way is
-// deliberately conservative: when the loop finishes without saying which
-// findings assert outside facts, none of them can be told apart from one that
-// does. It reports whether the finding was lowered.
+// structured claim (see judged). Only a finding explicitly reported with
+// external_claim true that cites no conclusive dependency or MCP call is an
+// unconfirmed external claim: it is lowered to the lowest reported severity
+// and gets the note, and one whose severity a rule fixes keeps it and gets the
+// note only. A finding the model never reported a claim for is kept as it is,
+// because nothing says it asserts an outside fact. It reports whether the
+// finding was lowered.
 func (p agentPolicy) applyClaimPolicy(r refinedFinding, calls *toolCallLog) (model.Finding, bool) {
 	f := r.Finding
-	if !p.downgrade || (r.ExternalClaim != nil && !*r.ExternalClaim) || calls.anyConfirms(r.VerifiedBy) {
+	if !p.downgrade || r.ExternalClaim == nil || !*r.ExternalClaim || calls.anyConfirms(r.VerifiedBy) {
 		return f, false
 	}
 	if !strings.Contains(f.Body, unverifiedClaimNote) {
@@ -298,7 +297,7 @@ func (p agentPolicy) applyClaimPolicy(r refinedFinding, calls *toolCallLog) (mod
 // the cited range, one of which contains the finding's own line; a finding that
 // duplicates an initial, retained or earlier added finding (same file and
 // category within three lines) is dropped, and at most p.maxAdded are kept.
-func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates []refinedFinding, calls *toolCallLog) (added []model.Finding, downgraded int) {
+func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates []refinedFinding, calls *toolCallLog) (added []model.Finding, downgraded, unreported int) {
 	known := append(append([]model.Finding{}, initial...), retained...)
 	for _, c := range candidates {
 		f := c.Finding
@@ -324,12 +323,15 @@ func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates [
 		if lowered {
 			downgraded++
 		}
+		if p.downgrade && c.ExternalClaim == nil {
+			unreported++
+		}
 		out.Origin = model.OriginAgentExplore
 		out.Body = strings.TrimRight(out.Body, "\n") + "\n\nEvidence read by the agent loop: " + cited
 		added = append(added, out)
 		known = append(known, out)
 	}
-	return added, downgraded
+	return added, downgraded, unreported
 }
 
 // capAddedSeverity lowers an added finding to the highest severity added
@@ -397,7 +399,7 @@ func (p agentPolicy) refinementRules() string {
 			"For each, give \"index\", \"external_claim\" (true or false) and \"verified_by\": the ids of the dependency or MCP tool calls whose conclusive results confirm the fact, empty when none does. " +
 			"A call that found nothing (\"not installed\", \"no pin found\", \"package exists: no\", \"no documentation found\") confirms nothing, " +
 			"and reading repository files does not confirm a fact about a dependency. " +
-			"A finding you do not report on, or whose external claim no tool result confirms, is downgraded automatically.\n")
+			"A finding you report as an external claim that no tool result confirms is downgraded automatically; a finding you do not report on is kept as it is.\n")
 	}
 	if p.tracksToolCalls() {
 		sb.WriteString("- Every tool result carries an \"id\" you can cite.\n")

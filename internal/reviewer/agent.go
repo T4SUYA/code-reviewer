@@ -276,6 +276,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	var retained, downgraded, addedFindings []model.Finding
 	recorded := map[int]claimEntry{} // Claims the claims action reported, by initial position.
 	answered := false
+	unreported := 0 // Findings the loop never reported a claim for under the downgrade policy.
 
 	for i := 0; i < cfg.MaxIterations; i++ {
 		// Check budget before calling model.
@@ -389,7 +390,11 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			matched, unmatched := partitionByInitial(initialFindings, returned)
 			answered = true
 			for _, m := range matched {
-				f, lowered := policy.applyClaimPolicy(m.judged(recorded), calls)
+				judged := m.judged(recorded)
+				if policy.downgrade && judged.ExternalClaim == nil {
+					unreported++
+				}
+				f, lowered := policy.applyClaimPolicy(judged, calls)
 				f.Origin = ""
 				if lowered {
 					downgraded = append(downgraded, f)
@@ -398,7 +403,8 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			}
 			final := append([]model.Finding{}, retained...)
 			if policy.explore {
-				added, loweredAdded := policy.acceptAdded(initialFindings, retained, unmatched, calls)
+				added, loweredAdded, unreportedAdded := policy.acceptAdded(initialFindings, retained, unmatched, calls)
+				unreported += unreportedAdded
 				result.Added, result.Downgraded = len(added), loweredAdded
 				addedFindings = added
 				final = append(final, added...)
@@ -431,10 +437,13 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			result.StopReason = "done"
 			if policy.downgrade {
 				// Without a findings answer the claims action is all the loop
-				// has to judge the findings by; the unreported ones count as
-				// unconfirmed claims.
+				// has to judge the findings by; the unreported ones are kept.
 				for idx, f := range initialFindings {
-					out, lowered := policy.applyClaimPolicy(refinedFinding{Finding: f, initialIndex: idx}.judged(recorded), calls)
+					judged := refinedFinding{Finding: f, initialIndex: idx}.judged(recorded)
+					if judged.ExternalClaim == nil {
+						unreported++
+					}
+					out, lowered := policy.applyClaimPolicy(judged, calls)
 					if lowered {
 						downgraded = append(downgraded, out)
 					}
@@ -454,6 +463,9 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 
 done:
 	result.Usage = totalUsage
+	if unreported > 0 {
+		slog.Warn("agent loop: findings kept without a reported claim under unverifiable_claims: downgrade", "count", unreported)
+	}
 	if answered {
 		result.Verdicts = buildVerdicts(initialFindings, retained, true)
 		result.Downgraded += len(downgraded)

@@ -411,12 +411,14 @@ func TestDowngrade_KeepsWhatAToolResultConfirmedOrThatClaimsNothingExternal(t *t
 	}
 }
 
-// A finding that never says whether it asserts an outside fact cannot be told
-// apart from one that does, so it is treated as an unconfirmed claim.
-func TestDowngrade_FindingWithoutAClaimIsTreatedAsUnconfirmed(t *testing.T) {
+// A finding the model never reports a claim for is kept as it is.
+func TestDowngrade_FindingWithoutAClaimIsKept(t *testing.T) {
 	res := downgradeRun(t, AgentConfig{}, wire("a.go", 5, "bug", "initial", nil))
-	if f := res.Findings[0]; f.Severity != "LOW" || !strings.Contains(f.Body, "not verified") {
-		t.Errorf("finding = %+v, want LOW with the note", f)
+	if f := res.Findings[0]; f.Severity != "HIGH" || strings.Contains(f.Body, "not verified") {
+		t.Errorf("finding = %+v, want it untouched", f)
+	}
+	if res.Downgraded != 0 || res.Verdicts[0].Status != VerdictVerified {
+		t.Errorf("Downgraded = %d, verdicts = %+v", res.Downgraded, res.Verdicts)
 	}
 }
 
@@ -582,16 +584,15 @@ func TestClaims_NotExternalFindingsAreLeftAlone(t *testing.T) {
 	}
 }
 
-// done with no claims leaves nothing to tell the findings apart by, so the
-// downgrade setting treats them all as unconfirmed.
-func TestClaims_DoneWithoutClaimsLowersEveryUnclaimedFinding(t *testing.T) {
+// done with no claims reports nothing about the findings, so they are kept.
+func TestClaims_DoneWithoutClaimsKeepsEveryUnreportedFinding(t *testing.T) {
 	res := claimsRun(t, `{"action":"done"}`)
-	if got := severities(res); got != "LOW,LOW" || res.Downgraded != 2 {
-		t.Errorf("severities = %s, downgraded = %d, want both lowered", got, res.Downgraded)
+	if got := severities(res); got != "HIGH,HIGH" || res.Downgraded != 0 {
+		t.Errorf("severities = %s, downgraded = %d, want both kept", got, res.Downgraded)
 	}
-	partial := claimsRun(t, claimsReply(t, claim(1, false)), `{"action":"done"}`)
-	if got := severities(partial); got != "LOW,HIGH" {
-		t.Errorf("only the reported finding should be spared: %s", got)
+	partial := claimsRun(t, claimsReply(t, claim(1, true)), `{"action":"done"}`)
+	if got := severities(partial); got != "HIGH,LOW" {
+		t.Errorf("only the finding reported as an unconfirmed external claim should be lowered: %s", got)
 	}
 }
 
