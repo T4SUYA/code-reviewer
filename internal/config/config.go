@@ -156,6 +156,7 @@ type Config struct {
 	CommentMode   CommentMode
 	CleanupMode   CleanupMode
 	DismissalMode DismissalMode
+	LearningsPath string // Path to a YAML/JSON file of previously dismissed findings given to the model as context ("" = none).
 	DryRun        bool
 	OutputJSON  bool
 	NoColor     bool   // Disable ANSI color output.
@@ -275,6 +276,7 @@ type repoConfig struct {
 	CommentMode      string   `yaml:"comment_mode"`
 	CleanupMode      string   `yaml:"cleanup_mode"`
 	DismissalMode    string   `yaml:"dismissal_mode"`
+	Learnings        string   `yaml:"learnings"`
 	ChunkStrategy    string   `yaml:"chunk_strategy"`
 	ChunkTargetTokens int      `yaml:"chunk_target_tokens"`
 	ChunkConcurrency  int      `yaml:"chunk_concurrency"`
@@ -538,6 +540,9 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.CleanupMode != "" {
 		c.CleanupMode = CleanupMode(rc.CleanupMode)
 	}
+	if rc.Learnings != "" {
+		c.LearningsPath = rc.Learnings
+	}
 	if rc.DismissalMode != "" {
 		c.DismissalMode = DismissalMode(rc.DismissalMode)
 	}
@@ -778,6 +783,9 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("REVIEW_OUTPUT_JSON"); strings.EqualFold(v, "true") {
 		c.OutputJSON = true
 	}
+	if v := os.Getenv("REVIEW_LEARNINGS"); v != "" {
+		c.LearningsPath = v
+	}
 	if v := os.Getenv("REVIEW_CUSTOM_PROMPT"); v != "" {
 		c.CustomPrompt = v
 	}
@@ -913,6 +921,7 @@ func (c *Config) loadFlags() error {
 	commentMode := fs.String("comment-mode", "", "GitLab comment mode: notes (simple) or discussions (inline)")
 	cleanupMode := fs.String("cleanup-mode", "", "How to handle previous bot comments (delete or resolve)")
 	dismissalMode := fs.String("dismissal-mode", "", "What dismisses a HIGH/CRITICAL finding's thread: any (reply or resolution, default) or resolve_only")
+	learnings := fs.String("learnings", "", "Path to a YAML/JSON file of previously dismissed findings; the model is told not to raise them again")
 	chunkStrategy := fs.String("chunk-strategy", "", "How to handle large diffs: fail (default) or split")
 	chunkTargetTokens := fs.Int("chunk-target-tokens", 0, "With --chunk-strategy split, pack chunks to this many estimated tokens instead of 80% of the context limit (0 = 80% of the limit)")
 	chunkConcurrency := fs.Int("chunk-concurrency", 0, "Review up to this many chunks at once (0 or 1 = one at a time)")
@@ -1020,6 +1029,9 @@ func (c *Config) loadFlags() error {
 	}
 	if *dismissalMode != "" {
 		c.DismissalMode = DismissalMode(*dismissalMode)
+	}
+	if *learnings != "" {
+		c.LearningsPath = *learnings
 	}
 	if *chunkStrategy != "" {
 		c.ChunkStrategy = ChunkStrategy(*chunkStrategy)

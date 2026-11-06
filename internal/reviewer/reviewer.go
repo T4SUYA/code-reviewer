@@ -18,6 +18,7 @@ import (
 	"github.com/OpticDiff/code-reviewer/internal/config"
 	ctxpkg "github.com/OpticDiff/code-reviewer/internal/context"
 	"github.com/OpticDiff/code-reviewer/internal/diff"
+	"github.com/OpticDiff/code-reviewer/internal/learnings"
 	"github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/vcs"
 )
@@ -40,6 +41,7 @@ type Reviewer struct {
 	cache                *cache.Cache
 	profileFilteredCount int // findings dropped by profile category enforcement
 	suggestionsDropped   int // suggestions removed by CheckSuggestions
+	learnings            []learnings.Entry
 }
 
 // New creates a new Reviewer.
@@ -84,6 +86,12 @@ func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
 		OmitTemperature: r.cfg.DisableTemperature,
 		ThinkingLevel:   r.cfg.ThinkingLevel,
 	}
+}
+
+// SetLearnings sets the previously dismissed findings that are given to the
+// model as prompt context.
+func (r *Reviewer) SetLearnings(entries []learnings.Entry) {
+	r.learnings = entries
 }
 
 // SetChatter sets the multi-turn chat provider for agent loop support.
@@ -316,6 +324,16 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		extraRules += prompt
 	}
 
+	// Previously dismissed findings supplied by the learnings file. The rendered
+	// section is also part of the cache identity below.
+	learningsSection := learnings.FormatPrompt(r.learnings, reviewFilePaths)
+	if learningsSection != "" {
+		if extraRules != "" {
+			extraRules += "\n\n"
+		}
+		extraRules += learningsSection
+	}
+
 	// In CI mode, source REVIEW.md from the trusted base/target ref so that
 	// contributor-controlled branches cannot inject review instructions.
 	reviewMD := r.cfg.ReviewMD
@@ -352,7 +370,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 	var cachedFindings []model.Finding
 	var cacheKeys map[string]string
 	if r.cache != nil && len(diffs) > 0 {
-		baseFormattedRules := config.FormatRulesPrompt(applicableRules, nil) + contextGuidance
+		baseFormattedRules := config.FormatRulesPrompt(applicableRules, nil) + contextGuidance + learningsSection
 		promptHashForFile := func(d diff.FileDiff) string {
 			fileDismissed := FormatDismissedPrompt(DismissedForFile(dismissed, d), resolveOnly)
 			return cache.PromptHash(r.cfg.CustomPrompt, platformReviewMD, reviewMD, r.cfg.Focus, r.cfg.ExtraRules, baseFormattedRules+fileDismissed)
