@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `prompt_profile` configuration field, `--prompt-profile` CLI flag, and `REVIEW_PROMPT_PROFILE` environment variable (`precision`, `balanced` or `recall`, case-insensitive). The profile replaces only the stance line of the built-in review prompt, which decides when the model reports a finding. `precision`, the default, is the existing prompt byte for byte. `recall` asks the model to report every suspicious pattern with an honest confidence; `confidence_floor` still decides which findings are kept, so pair `recall` with a lower floor. An invalid flag value is a usage error; an invalid environment or YAML value is ignored with a warning. Custom prompts that lack the built-in stance line are unchanged. A profile other than `precision` is part of the review cache identity; leaving it unset keeps existing cache entries valid.
+
 ## [0.28.0] — 2026-11-02
 
 ### Added

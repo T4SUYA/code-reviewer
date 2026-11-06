@@ -28,6 +28,12 @@ model: gemini-3.8-flash
 # parameters. Cannot be combined with temperature.
 # use_temperature: false
 
+# Precision/recall stance of the built-in review prompt: precision, balanced or recall.
+# Replaces only the line that says when to report a finding. precision (default) is the
+# prompt unchanged; recall asks the model to report every suspicious pattern with an honest
+# confidence, so pair it with a lower confidence_floor. Built-in prompt only.
+# prompt_profile: precision
+
 # Thinking level sent with Vertex AI model calls: minimal, low, medium or high.
 # Unset sends no thinking config. Passed to the model as given; a model that does
 # not accept it returns an API error. Not sent to api_url endpoints.
