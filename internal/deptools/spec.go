@@ -3,7 +3,7 @@
 // that claims an API, option or version does not exist can be checked against
 // evidence instead of memory.
 //
-// The tools here read the checkout and never use the network.
+// The tools read the checkout and never use the network.
 package deptools
 
 import (
@@ -14,11 +14,12 @@ import (
 
 // Tool names a user can list under agent_tools.
 const (
-	ToolPinnedVersion = "pinned_version"
+	ToolPinnedVersion        = "pinned_version"
+	ToolReadDependencySource = "read_dependency_source"
 )
 
 // AllNames lists every tool name Build accepts.
-var AllNames = []string{ToolPinnedVersion}
+var AllNames = []string{ToolPinnedVersion, ToolReadDependencySource}
 
 // Spec describes one tool in a form independent of the agent loop's types.
 type Spec struct {
@@ -37,6 +38,9 @@ type Spec struct {
 type Options struct {
 	// RepoRoot is the checkout the tools read.
 	RepoRoot string
+	// GoModCache is the Go module cache directory. Empty asks the environment
+	// (GOMODCACHE, then `go env GOMODCACHE`).
+	GoModCache string
 }
 
 // ValidName reports whether name is a tool Build knows.
@@ -61,6 +65,8 @@ func Build(names []string, opts Options) ([]Spec, error) {
 		switch name {
 		case ToolPinnedVersion:
 			specs = append(specs, pinnedVersionSpec(opts))
+		case ToolReadDependencySource:
+			specs = append(specs, readDependencySourceSpec(opts))
 		default:
 			return nil, fmt.Errorf("unknown agent tool %q (known: %v)", name, AllNames)
 		}
