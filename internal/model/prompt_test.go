@@ -364,3 +364,106 @@ func TestBuildPrompt_RemovedCodeIsInScope(t *testing.T) {
 		}
 	}
 }
+
+func TestWithPromptProfile_PrecisionIsByteIdenticalToGolden(t *testing.T) {
+	golden, err := os.ReadFile("testdata/prompt_precision.golden")
+	if err != nil {
+		t.Fatalf("reading golden: %v", err)
+	}
+	base := BuildPrompt([]string{"all"}, "")
+	if base != string(golden) {
+		t.Fatal("default prompt differs from the golden precision prompt")
+	}
+	for _, profile := range []string{"", "precision"} {
+		if got := WithPromptProfile(base, profile); got != string(golden) {
+			t.Errorf("WithPromptProfile(%q) changed the prompt", profile)
+		}
+	}
+}
+
+func TestWithPromptProfile_ReplacesOnlyTheStanceLine(t *testing.T) {
+	base := BuildPrompt([]string{"all"}, "")
+	for _, profile := range []string{"balanced", "recall"} {
+		t.Run(profile, func(t *testing.T) {
+			got := WithPromptProfile(base, profile)
+			if got == base {
+				t.Fatal("prompt unchanged")
+			}
+			if strings.Contains(got, "When in doubt, DO NOT flag it") {
+				t.Error("precision stance still present")
+			}
+			want := strings.Replace(base, precisionStance, promptProfileStances[profile], 1)
+			want = strings.Replace(want, precisionZeroIsFine, nonPrecisionZeroIsFine, 1)
+			if got != want {
+				t.Error("prompt differs from the base outside the stance and empty-review lines")
+			}
+			if !strings.Contains(got, "ZERO IS FINE") || !strings.Contains(got, "## OUTPUT FORMAT") {
+				t.Error("surrounding rules were lost")
+			}
+		})
+	}
+}
+
+func TestWithPromptProfile_Content(t *testing.T) {
+	base := BuildPrompt(nil, "")
+	recall := WithPromptProfile(base, "recall")
+	for _, want := range []string{"Investigate every suspicious pattern", "honest confidence", "threshold decides what is kept"} {
+		if !strings.Contains(recall, want) {
+			t.Errorf("recall prompt missing %q", want)
+		}
+	}
+	balanced := WithPromptProfile(base, "balanced")
+	if !strings.Contains(balanced, "even if it is not certain") {
+		t.Error("balanced prompt missing its stance")
+	}
+	if strings.Contains(balanced, "Investigate every suspicious pattern") {
+		t.Error("balanced prompt carries the recall stance")
+	}
+}
+
+func TestWithPromptProfile_UnknownAndCustomPromptsUnchanged(t *testing.T) {
+	base := BuildPrompt(nil, "")
+	if got := WithPromptProfile(base, "bogus"); got != base {
+		t.Error("unknown profile changed the prompt")
+	}
+	custom := "Review the diff and be kind."
+	if got := WithPromptProfile(custom, "recall"); got != custom {
+		t.Error("custom prompt without the stance line changed")
+	}
+}
+
+// Every profile keeps the floor clause, so the confidence floor still sets the
+// threshold whichever stance is in effect.
+func TestWithPromptProfile_ComposesWithConfidenceFloor(t *testing.T) {
+	base := BuildPrompt([]string{"bugs"}, "")
+	for _, profile := range []string{"", "precision", "balanced", "recall"} {
+		got := WithConfidenceFloor(WithPromptProfile(base, profile), 60)
+		if !strings.Contains(got, "confidence below 60%, omit the finding") {
+			t.Errorf("profile %q: floor not applied", profile)
+		}
+		if strings.Contains(got, "below 80%") {
+			t.Errorf("profile %q: default floor left behind", profile)
+		}
+	}
+}
+
+func TestWithPromptProfile_EmptyReviewLineMatchesStance(t *testing.T) {
+	base := BuildPrompt(nil, "")
+	if !strings.Contains(base, precisionZeroIsFine) {
+		t.Fatal("default prompt lacks the precision empty-review line")
+	}
+	for _, profile := range []string{"balanced", "recall"} {
+		got := WithPromptProfile(base, profile)
+		if strings.Contains(got, "perfectly valid review") {
+			t.Errorf("%s: precision empty-review wording still present", profile)
+		}
+		if !strings.Contains(got, "valid only if nothing suspicious remains after you investigated") {
+			t.Errorf("%s: reworded empty-review line missing", profile)
+		}
+	}
+	for _, profile := range []string{"", "precision"} {
+		if got := WithPromptProfile(base, profile); !strings.Contains(got, precisionZeroIsFine) {
+			t.Errorf("%s: precision empty-review line changed", profile)
+		}
+	}
+}

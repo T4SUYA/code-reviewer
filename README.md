@@ -349,6 +349,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--context-files` | Directory-scoped guidance files (comma-separated, e.g. `AGENTS.md`) | — |
 | `--temperature` | Sampling temperature for review calls, 0-2 (unset = built-in 0.2) | — |
 | `--use-temperature` | Send a temperature with model calls; `--use-temperature=false` sends none so the model's own default applies (conflicts with `--temperature`) | `true` |
+| `--prompt-profile` | Precision/recall stance of the built-in review prompt: `precision`, `balanced` or `recall` (case-insensitive) | `precision` |
 | `--thinking-level` | Thinking level sent with Vertex AI model calls: `minimal`, `low`, `medium` or `high` (case-insensitive; unset = send none) | — |
 | `--operator-config` | Operator config file for settings the repository config may not set (`agent_mcp_servers`); see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) | — |
 | `--extra-rules` | Additional prompt rules | — |
@@ -422,6 +423,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `REVIEW_CONTEXT_FILES` | Directory-scoped guidance files, comma-separated | — |
 | `REVIEW_TEMPERATURE` | Sampling temperature for review calls (0-2) | — |
 | `REVIEW_USE_TEMPERATURE` | Set to `false` to send no temperature on any model call | `true` |
+| `REVIEW_PROMPT_PROFILE` | Precision/recall stance of the built-in prompt (`precision`, `balanced`, `recall`); invalid values are ignored with a warning | `precision` |
 | `REVIEW_THINKING_LEVEL` | Thinking level for Vertex AI model calls (`minimal`, `low`, `medium`, `high`); invalid values are ignored with a warning | — |
 | `CODE_REVIEWER_OPERATOR_CONFIG` | Operator config file path (same as `--operator-config`) | — |
 | `REVIEW_CUSTOM_PROMPT` | Path to custom system prompt | — |
@@ -466,6 +468,7 @@ chunk_concurrency: 4     # Optional: review up to 4 chunks at once
 confidence_floor: 80     # Optional: minimum model confidence percent (1-100) to report a finding
 temperature: 0           # Optional: sampling temperature (0-2); unset = built-in 0.2
 use_temperature: true    # Optional: false = send no temperature at all (model default applies)
+prompt_profile: precision  # Optional: precision | balanced | recall; default precision
 thinking_level: high     # Optional: minimal | low | medium | high; unset = send no thinking config
 focus: [bugs, security]
 context_files: [AGENTS.md]   # Optional: include the nearest AGENTS.md for each changed directory
@@ -576,6 +579,16 @@ For repeatable verdicts on unchanged code, `temperature: 0` (or `--temperature 0
 Some models deprecate or reject sampling parameters. Google's Gemini 3 documentation, for example, recommends keeping `temperature` at its default and lists it among the deprecated sampling parameters. For such models set `use_temperature: false` (or `--use-temperature=false`, or `REVIEW_USE_TEMPERATURE=false`): the tool then sends no temperature on any call (review, summary, explain, consensus and the agent loop, over Vertex AI or `--api-url`), and the model's own default applies. It cannot be combined with `temperature`. For repeatable verdicts on such models, prefer multi-model consensus (`--models`).
 
 To choose how much a thinking model reasons before answering, set `thinking_level` (or `--thinking-level`, or `REVIEW_THINKING_LEVEL`) to `minimal`, `low`, `medium` or `high`. The level is sent as the `ThinkingConfig` of every Vertex AI generation request (review, summary, explain, consensus and the agent loop) exactly as given, so a model that does not accept it returns its own API error. When unset, no thinking config is sent and the request is unchanged. It is not sent to `--api-url` endpoints, which log a warning and ignore it.
+
+To choose how conservative the review is, set `prompt_profile` (or `--prompt-profile`, or `REVIEW_PROMPT_PROFILE`). It replaces one line of the built-in prompt, the stance that tells the model when to report a finding; everything else in the prompt is unchanged.
+
+| Profile | Stance |
+|---|---|
+| `precision` (default) | When in doubt, do not flag. Only report issues the model is confident are genuine. This is the prompt as it has always been, byte for byte. |
+| `balanced` | Report a finding when the diff and its context support it, even if it is not certain, and say how sure the model is. Skip speculation that cannot be tied to a changed line. |
+| `recall` | Investigate every suspicious pattern in the changed lines and report each one that could be a real defect with an honest confidence, instead of dropping uncertain ones. |
+
+The profile changes what the model investigates and reports; `confidence_floor` changes which of those findings are kept. Every profile keeps the floor sentence, so `confidence_floor` applies under all three. A conservative stance prompts the model to drop uncertain findings before they are scored, so `recall` only has an effect together with a lower floor: pair it with something like `confidence_floor: 50`, then raise the floor again if the output is too noisy. `--prompt-profile` is unrelated to `--profile`, which selects the platform, product or all review (see above). Both settings apply only to the built-in prompt; a `custom_prompt` that does not contain the built-in stance line is left as written. A profile other than `precision` is part of the review cache identity, so changing it re-reviews cached diffs; leaving it unset keeps existing cache entries valid.
 
 ### Agent Tools and MCP Servers
 

@@ -2285,3 +2285,60 @@ func TestLoad_AgentToolsFlagOverridesYAML(t *testing.T) {
 		t.Error("an unknown tool name from the flag was accepted")
 	}
 }
+
+func TestLoad_PromptProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		env     string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{name: "unset by default"},
+		{name: "yaml", yaml: "prompt_profile: recall\n", want: "recall"},
+		{name: "yaml is case-insensitive", yaml: "prompt_profile: Balanced\n", want: "balanced"},
+		{name: "env", env: "recall", want: "recall"},
+		{name: "flag", args: []string{"--prompt-profile", "balanced"}, want: "balanced"},
+		{name: "env overrides yaml", yaml: "prompt_profile: balanced\n", env: "recall", want: "recall"},
+		{name: "flag overrides env", env: "recall", args: []string{"--prompt-profile", "precision"}, want: "precision"},
+		{name: "flag overrides yaml", yaml: "prompt_profile: recall\n", args: []string{"--prompt-profile=balanced"}, want: "balanced"},
+		{name: "invalid flag is a usage error", args: []string{"--prompt-profile", "aggressive"}, wantErr: true},
+		{name: "invalid env is ignored", env: "aggressive"},
+		{name: "invalid env keeps yaml", yaml: "prompt_profile: balanced\n", env: "aggressive", want: "balanced"},
+		{name: "invalid yaml is ignored", yaml: "prompt_profile: aggressive\n"},
+		{name: "invalid yaml keeps env", yaml: "prompt_profile: aggressive\n", env: "recall", want: "recall"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("REVIEW_PROMPT_PROFILE", tt.env)
+			cfg, err := loadWithAgentScope(t, tt.yaml, tt.args...)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Load() succeeded, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.PromptProfile != tt.want {
+				t.Errorf("PromptProfile = %q, want %q", cfg.PromptProfile, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsePromptProfile(t *testing.T) {
+	for _, profile := range PromptProfiles {
+		got, err := ParsePromptProfile(" " + strings.ToUpper(profile) + " ")
+		if err != nil || got != profile {
+			t.Errorf("ParsePromptProfile(%q) = %q, %v; want %q", profile, got, err, profile)
+		}
+	}
+	for _, bad := range []string{"", "none", "max", "0"} {
+		if _, err := ParsePromptProfile(bad); err == nil {
+			t.Errorf("ParsePromptProfile(%q) succeeded, want error", bad)
+		}
+	}
+}

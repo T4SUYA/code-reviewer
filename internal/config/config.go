@@ -133,6 +133,7 @@ type Config struct {
 	ConfidenceFloor    int      // Minimum confidence percent (1-100) the model needs to report a finding (0 = built-in default of 80).
 	Temperature        *float64 // Sampling temperature override (nil = provider default).
 	DisableTemperature bool     // Send no temperature on any model call; the model's own default applies.
+	PromptProfile      string   // Precision/recall stance of the built-in review prompt: precision, balanced or recall ("" = precision).
 	ThinkingLevel      string   // Thinking level sent on Vertex AI generation requests: minimal, low, medium or high ("" = send none).
 	GCPProject         string
 	GCPLocation        string
@@ -276,6 +277,7 @@ type repoConfig struct {
 	ConfidenceFloor  int      `yaml:"confidence_floor"`
 	Temperature      *float64 `yaml:"temperature"`
 	UseTemperature   *bool    `yaml:"use_temperature"`
+	PromptProfile    string   `yaml:"prompt_profile"`
 	ThinkingLevel    string   `yaml:"thinking_level"`
 	Focus            []string `yaml:"focus"`
 	ContextFiles     []string `yaml:"context_files"`
@@ -532,6 +534,13 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.UseTemperature != nil {
 		c.DisableTemperature = !*rc.UseTemperature
 	}
+	if rc.PromptProfile != "" {
+		if profile, err := ParsePromptProfile(rc.PromptProfile); err != nil {
+			slog.Warn("ignoring invalid prompt_profile in .code-reviewer.yaml", "value", rc.PromptProfile, "error", err)
+		} else {
+			c.PromptProfile = profile
+		}
+	}
 	if rc.ThinkingLevel != "" {
 		if level, err := ParseThinkingLevel(rc.ThinkingLevel); err != nil {
 			slog.Warn("ignoring invalid thinking_level in .code-reviewer.yaml", "value", rc.ThinkingLevel, "error", err)
@@ -732,6 +741,13 @@ func (c *Config) loadEnv() {
 			slog.Warn("ignoring invalid REVIEW_USE_TEMPERATURE", "value", v, "error", err)
 		} else {
 			c.DisableTemperature = !use
+		}
+	}
+	if v := os.Getenv("REVIEW_PROMPT_PROFILE"); v != "" {
+		if profile, err := ParsePromptProfile(v); err != nil {
+			slog.Warn("ignoring invalid REVIEW_PROMPT_PROFILE", "value", v, "error", err)
+		} else {
+			c.PromptProfile = profile
 		}
 	}
 	if v := os.Getenv("REVIEW_THINKING_LEVEL"); v != "" {
@@ -942,6 +958,7 @@ func (c *Config) loadFlags() error {
 	contextFiles := fs.String("context-files", "", "Directory-scoped guidance file names to include for changed directories, comma-separated (e.g. AGENTS.md)")
 	temperature := fs.Float64("temperature", 0, "Sampling temperature for review calls (0-2); unset keeps the provider default")
 	useTemperature := fs.Bool("use-temperature", true, "Send a sampling temperature with model calls; --use-temperature=false sends none, so the model's own default applies")
+	promptProfile := fs.String("prompt-profile", "", "Precision/recall stance of the review prompt: precision, balanced or recall (default precision)")
 	thinkingLevel := fs.String("thinking-level", "", "Thinking level for model calls: minimal, low, medium or high; unset sends none")
 	focus := fs.String("focus", "", "Review focus areas, comma-separated (bugs,security,performance,style,docs,all)")
 	minSev := fs.String("min-severity", "", "Minimum severity to report (low, medium, high, critical)")
@@ -1032,6 +1049,13 @@ func (c *Config) loadFlags() error {
 
 	if *model != "" {
 		c.Model = *model
+	}
+	if *promptProfile != "" {
+		profile, err := ParsePromptProfile(*promptProfile)
+		if err != nil {
+			return fmt.Errorf("invalid --prompt-profile: %w", err)
+		}
+		c.PromptProfile = profile
 	}
 	if *thinkingLevel != "" {
 		level, err := ParseThinkingLevel(*thinkingLevel)
@@ -1328,6 +1352,21 @@ func githubStackedPR(baseRef, eventPath string) bool {
 	}
 	def := evt.Repository.DefaultBranch
 	return def != "" && baseRef != def
+}
+
+// PromptProfiles lists the accepted prompt profiles, most conservative first.
+var PromptProfiles = []string{"precision", "balanced", "recall"}
+
+// ParsePromptProfile normalizes a prompt profile to lower case and checks it
+// against PromptProfiles.
+func ParsePromptProfile(s string) (string, error) {
+	profile := strings.ToLower(strings.TrimSpace(s))
+	for _, valid := range PromptProfiles {
+		if profile == valid {
+			return profile, nil
+		}
+	}
+	return "", fmt.Errorf("unknown prompt profile %q: must be one of %s", s, strings.Join(PromptProfiles, ", "))
 }
 
 // ThinkingLevels lists the accepted thinking-level values, lowest first.

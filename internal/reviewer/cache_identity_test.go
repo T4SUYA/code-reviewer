@@ -119,3 +119,16 @@ func TestRun_CacheReplayDependsOnEffectiveThinkingLevel(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewCacheModelID_PromptProfilesDiffer(t *testing.T) {
+	ids := map[string]string{}
+	for _, profile := range []string{"", "precision", "balanced", "recall"} {
+		ids[profile] = reviewCacheModelID(&config.Config{Model: "m", PromptProfile: profile})
+	}
+	if ids[""] != ids["precision"] {
+		t.Errorf("precision changes the identity: %q vs %q", ids[""], ids["precision"])
+	}
+	if ids["balanced"] == ids["recall"] || ids["balanced"] == ids["precision"] || ids["recall"] == ids["precision"] {
+		t.Errorf("profiles share a cache identity: %v", ids)
+	}
+}
