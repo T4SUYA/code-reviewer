@@ -450,6 +450,9 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 	// Step 4: Build prompt and call model for each chunk.
 	systemPrompt := model.BuildPromptWithProfile(r.cfg.CustomPrompt, platformReviewMD, reviewMD, r.cfg.Focus, extraRules, intentContext, r.cfg.Profile)
 	systemPrompt = model.WithPromptProfile(systemPrompt, r.cfg.PromptProfile)
+	if r.cfg.PromptProfile == "recall" && r.cfg.ConfidenceFloor >= 80 {
+		slog.Warn("prompt_profile recall with a confidence floor of 80 or more keeps almost only high-confidence findings; lower confidence_floor (for example 50) to benefit from recall", "confidence_floor", r.cfg.ConfidenceFloor)
+	}
 	systemPrompt = model.WithConfidenceFloor(systemPrompt, r.cfg.ConfidenceFloor)
 	var summary string
 	var chunkSummaries []string
