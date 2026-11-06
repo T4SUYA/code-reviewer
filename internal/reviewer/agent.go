@@ -2,6 +2,7 @@
 package reviewer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OpticDiff/code-reviewer/internal/deptools"
+	"github.com/OpticDiff/code-reviewer/internal/mcp"
 	providermodel "github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/retry"
 	"github.com/OpticDiff/code-reviewer/pkg/model"
@@ -57,21 +60,35 @@ func (g *GenaiChatter) Chat(ctx context.Context, history []*genai.Content, confi
 
 // AgentConfig configures the agent refinement loop.
 type AgentConfig struct {
-	MaxIterations   int           // Max refinement turns (default 3).
-	RemainingBudget int64         // Token budget remaining from initial review.
-	Timeout         time.Duration // Wall-clock timeout (default 3m).
-	RepoRoot        string        // Repository root for tool access.
-	OmitTemperature bool          // Send no temperature, leaving the model's own default (default false: 0.0).
-	ThinkingLevel   string        // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
+	MaxIterations   int                // Max refinement turns (default 3).
+	RemainingBudget int64              // Token budget remaining from initial review.
+	Timeout         time.Duration      // Wall-clock timeout (default 3m).
+	RepoRoot        string             // Repository root for tool access.
+	OmitTemperature bool               // Send no temperature, leaving the model's own default (default false: 0.0).
+	ThinkingLevel   string             // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
+	ExtraTools      []Tool             // Tools registered after the built-in repository tools.
+	MCPServers      []mcp.ServerConfig // MCP servers whose allowlisted tools register as "<server>.<tool>".
+	// DependencyTools names the dependency tools to register (pinned_version,
+	// registry_lookup, read_dependency_source, docs_lookup). Empty registers none.
+	DependencyTools       []string
+	DependencyToolOptions deptools.Options // Options of the dependency tools; RepoRoot is filled from this config.
+
+	Mode               string                   // AgentModeRefine (default) or AgentModeExplore: the loop may also add findings backed by tool evidence.
+	AddedMaxSeverity   string                   // Highest severity an added finding keeps (default DefaultAddedMaxSeverity); higher ones are lowered to it.
+	MaxAddedFindings   int                      // Findings an explore run may add (default DefaultMaxAddedFindings).
+	UnverifiableClaims string                   // UnverifiableClaimsKeep (default) or UnverifiableClaimsDowngrade.
+	SeverityLocked     func(model.Finding) bool // Reports findings whose severity a rule fixes; a downgrade leaves their severity alone.
 }
 
 // AgentResult holds the output of the agent refinement loop.
 type AgentResult struct {
-	Findings   []model.Finding    `json:"findings"`
-	Usage      model.TokenUsage   `json:"usage"`
-	Iterations int                `json:"iterations"`
-	ToolCalls  map[string]int     `json:"tool_calls"` // tool name -> call count
-	StopReason string             `json:"stop_reason"` // "done", "budget", "iterations", "timeout", "error", "stable"
+	Findings   []model.Finding  `json:"findings"`
+	Usage      model.TokenUsage `json:"usage"`
+	Iterations int              `json:"iterations"`
+	ToolCalls  map[string]int   `json:"tool_calls"`           // tool name -> call count
+	StopReason string           `json:"stop_reason"`          // "done", "budget", "iterations", "timeout", "error", "stable"
+	Added      int              `json:"added,omitempty"`      // Findings the loop added (explore mode).
+	Downgraded int              `json:"downgraded,omitempty"` // Findings lowered for an unconfirmed external claim.
 	// Verdicts records, for every finding the loop was given, whether it was
 	// verified, dismissed, or left unverified because the loop did not finish.
 	Verdicts []FindingVerdict `json:"verdicts,omitempty"`
@@ -85,6 +102,8 @@ type AgentAudit struct {
 	ToolCalls      map[string]int `json:"tool_calls,omitempty"`
 	FindingsBefore int            `json:"findings_before"`
 	FindingsAfter  int            `json:"findings_after"`
+	Added          int            `json:"added,omitempty"`
+	Downgraded     int            `json:"downgraded,omitempty"`
 	Error          string         `json:"error,omitempty"`
 }
 
@@ -96,6 +115,7 @@ func newAgentAudit(res *AgentResult, err error, before, after int) *AgentAudit {
 	a := &AgentAudit{FindingsBefore: before, FindingsAfter: after, StopReason: "error"}
 	if res != nil {
 		a.Iterations, a.StopReason, a.ToolCalls = res.Iterations, res.StopReason, res.ToolCalls
+		a.Added, a.Downgraded = res.Added, res.Downgraded
 	}
 	if err != nil {
 		a.Error = err.Error()
@@ -179,10 +199,11 @@ func buildVerdicts(initial, final []model.Finding, completed bool) []FindingVerd
 
 // agentAction is the parsed model response format.
 type agentAction struct {
-	Action   string          `json:"action"`             // "tool", "findings", "done"
+	Action   string          `json:"action"`             // "tool", "findings", "claims", "done"
 	Tool     string          `json:"tool,omitempty"`     // tool name (when action=tool)
 	Args     map[string]any  `json:"args,omitempty"`     // tool arguments
 	Findings json.RawMessage `json:"findings,omitempty"` // refined findings (when action=findings)
+	Claims   json.RawMessage `json:"claims,omitempty"`   // external-claim report (when action=claims)
 }
 
 // RunAgentLoop executes the agent refinement loop. It takes initial findings,
@@ -206,6 +227,17 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	defer cancel()
 
 	tools := NewToolRegistry(cfg.RepoRoot)
+	for _, t := range cfg.ExtraTools {
+		if err := tools.Register(t); err != nil {
+			return nil, fmt.Errorf("registering agent tool: %w", err)
+		}
+	}
+	if err := registerDependencyTools(tools, cfg); err != nil {
+		return nil, err
+	}
+	if len(cfg.MCPServers) > 0 {
+		defer registerMCPTools(ctx, tools, cfg.MCPServers)()
+	}
 	result := &AgentResult{
 		Findings:   initialFindings,
 		ToolCalls:  make(map[string]int),
@@ -219,30 +251,32 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	}
 
 	// System instruction: pin initial findings (from ML review — don't rely on event history).
-	systemPrompt := buildRefinementSystemPrompt(string(findingsJSON))
+	policy := cfg.policy()
+	calls := newToolCallLog()
+	systemPrompt := buildRefinementSystemPrompt(string(findingsJSON), tools.Prompt(), policy)
 	genConfig := &genai.GenerateContentConfig{
 		SystemInstruction: genai.NewContentFromText(systemPrompt, genai.RoleUser),
 		ResponseMIMEType:  "application/json",
-		ResponseSchema:    agentResponseSchema(true),
+		ResponseSchema:    agentResponseSchema(tools, true, policy),
 	}
 	if !cfg.OmitTemperature {
 		genConfig.Temperature = genai.Ptr(float32(0.0)) // Deterministic for refinement (ML review).
 	}
 	genConfig.ThinkingConfig = providermodel.ThinkingConfigFor(cfg.ThinkingLevel)
 	finalConfig := *genConfig
-	finalConfig.ResponseSchema = agentResponseSchema(false)
+	finalConfig.ResponseSchema = agentResponseSchema(tools, false, policy)
 
 	// Build conversation history.
 	history := []*genai.Content{
-		genai.NewContentFromText(
-			"Review the initial findings above. Use the available tools to verify or dismiss each finding. "+
-				"Only dismiss a finding if you can prove it is a false positive with concrete evidence from the code.",
-			genai.RoleUser,
-		),
+		genai.NewContentFromText(policy.startInstruction(), genai.RoleUser),
 	}
 
 	var totalUsage model.TokenUsage
 	consecutiveToolErrors := 0
+	var retained, downgraded, addedFindings []model.Finding
+	recorded := map[int]claimEntry{} // Claims the claims action reported, by initial position.
+	answered := false
+	unreported := 0 // Findings the loop never reported a claim for under the downgrade policy.
 
 	for i := 0; i < cfg.MaxIterations; i++ {
 		// Check budget before calling model.
@@ -321,6 +355,9 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 
 			// Execute tool.
 			toolResult := tools.Execute(ctx, action.Tool, action.Args)
+			if policy.tracksToolCalls() {
+				toolResult.ID = calls.record(action.Tool, action.Args, toolResult)
+			}
 			if toolResult.Error != "" {
 				consecutiveToolErrors++
 				if consecutiveToolErrors >= 2 {
@@ -334,8 +371,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			}
 
 			// Append tool result to history as user message.
-			toolJSON, _ := json.Marshal(toolResult) //nolint:errcheck
-			resultText := fmt.Sprintf("<tool_result>%s</tool_result>", string(toolJSON))
+			resultText := fmt.Sprintf("<tool_result>%s</tool_result>", toolResultJSON(toolResult))
 			if i+1 == cfg.MaxIterations-1 {
 				resultText += "\nThis is the last turn: no more tool calls. Return the refined findings or done."
 			}
@@ -343,20 +379,79 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 
 		case "findings":
 			// Parse refined findings.
-			var refined []model.Finding
-			if err := json.Unmarshal(action.Findings, &refined); err != nil {
+			var returned []refinedFinding
+			if err := json.Unmarshal(action.Findings, &returned); err != nil {
 				slog.Warn("agent loop: invalid findings JSON, keeping initial", "error", err)
 				result.StopReason = "error"
 				goto done
 			}
-			// Validate: refined findings must be a subset of initial (can't add new ones).
-			validated := validateRefinedFindings(initialFindings, refined)
-			result.Findings = validated
+			// Findings at an initial location are refinements; the rest are
+			// dropped unless explore mode accepts them with evidence.
+			matched, unmatched := partitionByInitial(initialFindings, returned)
+			answered = true
+			for _, m := range matched {
+				judged := m.judged(recorded)
+				if policy.downgrade && judged.ExternalClaim == nil {
+					unreported++
+				}
+				f, lowered := policy.applyClaimPolicy(judged, calls)
+				f.Origin = ""
+				if lowered {
+					downgraded = append(downgraded, f)
+				}
+				retained = append(retained, f)
+			}
+			final := append([]model.Finding{}, retained...)
+			if policy.explore {
+				added, loweredAdded, unreportedAdded := policy.acceptAdded(initialFindings, retained, unmatched, calls)
+				unreported += unreportedAdded
+				result.Added, result.Downgraded = len(added), loweredAdded
+				addedFindings = added
+				final = append(final, added...)
+			} else if len(unmatched) > 0 {
+				slog.Debug("agent loop: dropping non-initial findings", "count", len(unmatched))
+			}
+			result.Findings = final
 			result.StopReason = "done"
 			goto done
 
+		case "claims":
+			if !policy.downgrade {
+				slog.Warn("agent loop: claims action without unverifiable_claims: downgrade", "iteration", i+1)
+				result.StopReason = "error"
+				goto done
+			}
+			var entries []claimEntry
+			if err := json.Unmarshal(action.Claims, &entries); err != nil {
+				slog.Warn("agent loop: invalid claims JSON, stopping", "error", err)
+				result.StopReason = "error"
+				goto done
+			}
+			reported := recordClaims(recorded, entries, len(initialFindings))
+			history = append(history, genai.NewContentFromText(
+				fmt.Sprintf("Claims recorded for %d finding(s). Continue with tools, or finish with findings or done.", reported),
+				genai.RoleUser,
+			))
+
 		case "done":
 			result.StopReason = "done"
+			if policy.downgrade {
+				// Without a findings answer the claims action is all the loop
+				// has to judge the findings by; the unreported ones are kept.
+				for idx, f := range initialFindings {
+					judged := refinedFinding{Finding: f, initialIndex: idx}.judged(recorded)
+					if judged.ExternalClaim == nil {
+						unreported++
+					}
+					out, lowered := policy.applyClaimPolicy(judged, calls)
+					if lowered {
+						downgraded = append(downgraded, out)
+					}
+					retained = append(retained, out)
+				}
+				result.Findings = append([]model.Finding{}, retained...)
+				answered = true
+			}
 			goto done
 
 		default:
@@ -368,7 +463,19 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 
 done:
 	result.Usage = totalUsage
-	result.Verdicts = buildVerdicts(initialFindings, result.Findings, result.StopReason == "done")
+	if unreported > 0 {
+		slog.Warn("agent loop: findings kept without a reported claim under unverifiable_claims: downgrade", "count", unreported)
+	}
+	if answered {
+		result.Verdicts = buildVerdicts(initialFindings, retained, true)
+		result.Downgraded += len(downgraded)
+		markDowngraded(result.Verdicts, downgraded)
+		for _, f := range addedFindings {
+			result.Verdicts = append(result.Verdicts, FindingVerdict{File: f.File, Line: f.Line, OldLine: f.OldLine, Severity: f.Severity, Title: f.Title, Status: VerdictAdded})
+		}
+	} else {
+		result.Verdicts = buildVerdicts(initialFindings, result.Findings, result.StopReason == "done")
+	}
 	return result, nil
 }
 
@@ -387,27 +494,23 @@ func runScopedAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	if err != nil {
 		return findings, result, err
 	}
-	return append(append([]model.Finding{}, result.Findings...), rest...), result, nil
+	merged := append([]model.Finding{}, result.Findings...)
+	if len(rest) > 0 {
+		merged = dropAddedMatching(merged, rest)
+	}
+	return append(merged, rest...), result, nil
 }
 
 // buildRefinementSystemPrompt constructs the system prompt with pinned findings
 // and tool schemas. Initial findings are in the system instruction so they
 // survive memory compression (from ML Systems review).
-func buildRefinementSystemPrompt(findingsJSON string) string {
+func buildRefinementSystemPrompt(findingsJSON, toolsPrompt string, policy agentPolicy) string {
 	var sb strings.Builder
 	sb.WriteString("You are a code review refinement agent. Your job is to verify or dismiss initial findings.\n\n")
-	sb.WriteString("## Rules\n")
-	sb.WriteString("- You may ONLY drop or modify initial findings. You MUST NOT add new findings.\n")
-	sb.WriteString("- Only dismiss a finding if new context from tools PROVES it is a false positive.\n")
-	sb.WriteString("- If you cannot verify a finding, keep it as-is.\n")
-	sb.WriteString("- Use tools to read relevant source files and verify findings.\n\n")
-	sb.WriteString("## Response Format\n")
-	sb.WriteString("Respond with exactly ONE JSON object per turn:\n")
-	sb.WriteString("- To call a tool: {\"action\": \"tool\", \"tool\": \"<name>\", \"args\": {<args>}}\n")
-	sb.WriteString("- To return refined findings: {\"action\": \"findings\", \"findings\": [<findings>]}\n")
-	sb.WriteString("- To finish without changes: {\"action\": \"done\"}\n\n")
+	sb.WriteString(policy.refinementRules())
+	sb.WriteString(policy.responseFormat())
 	sb.WriteString("## ")
-	sb.WriteString(ToolSchemas())
+	sb.WriteString(toolsPrompt)
 	sb.WriteString("\n\n")
 	sb.WriteString("## Initial Findings\n")
 	sb.WriteString("<initial_findings>\n")
@@ -420,33 +523,47 @@ func buildRefinementSystemPrompt(findingsJSON string) string {
 // Uses count-based matching to handle duplicate findings at the same file+line.
 // Any finding in refined that doesn't match an initial finding is dropped.
 func validateRefinedFindings(initial, refined []model.Finding) []model.Finding {
-	// Build count of initial findings per location.
-	type key struct {
-		File    string
-		Line    int
-		OldLine int
+	returned := make([]refinedFinding, len(refined))
+	for i, f := range refined {
+		returned[i] = refinedFinding{Finding: f}
 	}
-	initialCounts := make(map[key]int, len(initial))
-	for _, f := range initial {
-		initialCounts[key{File: f.File, Line: f.Line, OldLine: f.OldLine}]++
+	matched, dropped := partitionByInitial(initial, returned)
+	for _, d := range dropped {
+		slog.Debug("agent loop: dropping non-initial finding", "file", d.File, "line", d.Line)
 	}
-
-	// Accept refined findings only while their location has remaining matches.
-	validated := make([]model.Finding, 0, len(refined))
-	for _, f := range refined {
-		if f.Line > 0 {
-			f.OldLine = 0
-		}
-		k := key{File: f.File, Line: f.Line, OldLine: f.OldLine}
-		if initialCounts[k] > 0 {
-			initialCounts[k]--
-			validated = append(validated, f)
-		} else {
-			slog.Debug("agent loop: dropping non-initial finding",
-				"file", f.File, "line", f.Line)
-		}
+	validated := make([]model.Finding, 0, len(matched))
+	for _, m := range matched {
+		validated = append(validated, m.Finding)
 	}
 	return validated
+}
+
+// recordClaims stores the entries of a claims action under their initial
+// position, later entries replacing earlier ones, and returns how many entries
+// named a finding. Entries without a position in range are ignored.
+func recordClaims(recorded map[int]claimEntry, entries []claimEntry, findings int) int {
+	n := 0
+	for _, e := range entries {
+		if e.Index < 0 || e.Index >= findings {
+			continue
+		}
+		recorded[e.Index] = e
+		n++
+	}
+	return n
+}
+
+// markDowngraded relabels the verdict of each downgraded finding.
+func markDowngraded(verdicts []FindingVerdict, downgraded []model.Finding) {
+	for _, d := range downgraded {
+		for i := range verdicts {
+			v := &verdicts[i]
+			if v.Status == VerdictVerified && v.File == d.File && v.Line == d.Line && v.OldLine == d.OldLine {
+				v.Status = VerdictDowngraded
+				break
+			}
+		}
+	}
 }
 
 // describeEmptyResponse explains why a response carried no text, using the
@@ -488,4 +605,17 @@ func extractResponseText(resp *genai.GenerateContentResponse) string {
 		}
 	}
 	return sb.String()
+}
+
+// toolResultJSON encodes a tool result for the conversation. HTML escaping is
+// off so the <untrusted_tool_output> frame reaches the model as the literal
+// tag the prompt names, not as \u003c escapes.
+func toolResultJSON(res ToolResult) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(res); err != nil {
+		return `{"error":"tool result could not be encoded"}`
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }

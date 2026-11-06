@@ -18,6 +18,7 @@ import (
 	"github.com/OpticDiff/code-reviewer/internal/config"
 	ctxpkg "github.com/OpticDiff/code-reviewer/internal/context"
 	"github.com/OpticDiff/code-reviewer/internal/diff"
+	"github.com/OpticDiff/code-reviewer/internal/mcp"
 	"github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/vcs"
 )
@@ -77,13 +78,46 @@ func NewWithDiffSource(cfg *config.Config, provider ModelReviewer, glClient vcs.
 // agentConfig builds the agent loop configuration from the review settings.
 func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
 	return AgentConfig{
-		MaxIterations:   r.cfg.AgentMaxIterations,
-		RemainingBudget: remainingBudget,
-		Timeout:         r.cfg.AgentTimeout,
-		RepoRoot:        findRepoRoot(),
-		OmitTemperature: r.cfg.DisableTemperature,
-		ThinkingLevel:   r.cfg.ThinkingLevel,
+		MaxIterations:         r.cfg.AgentMaxIterations,
+		RemainingBudget:       remainingBudget,
+		Timeout:               r.cfg.AgentTimeout,
+		RepoRoot:              findRepoRoot(),
+		OmitTemperature:       r.cfg.DisableTemperature,
+		ThinkingLevel:         r.cfg.ThinkingLevel,
+		MCPServers:            mcpServerConfigs(r.cfg.AgentMCPServers),
+		DependencyTools:       r.cfg.AgentTools,
+		DependencyToolOptions: r.cfg.AgentToolOptions.DependencyToolOptions(),
+
+		Mode:               r.cfg.AgentMode,
+		MaxAddedFindings:   r.cfg.AgentMaxAdded,
+		AddedMaxSeverity:   r.cfg.AddedMaxSeverity,
+		UnverifiableClaims: r.cfg.UnverifiableClaims,
+		SeverityLocked:     r.severityLocked,
 	}
+}
+
+// severityLocked reports whether a configured rule fixes the finding's
+// severity, as enforceRuleAttributionAndSuppressions does for every finding
+// named after a rule.
+func (r *Reviewer) severityLocked(f model.Finding) bool {
+	if f.RuleName == "" {
+		return false
+	}
+	for _, rule := range r.cfg.Rules {
+		if strings.EqualFold(rule.Name, f.RuleName) {
+			return true
+		}
+	}
+	return false
+}
+
+// mcpServerConfigs converts the configured MCP servers for the agent loop.
+func mcpServerConfigs(servers []config.AgentMCPServer) []mcp.ServerConfig {
+	var out []mcp.ServerConfig
+	for _, s := range servers {
+		out = append(out, mcp.ServerConfig(s))
+	}
+	return out
 }
 
 // SetChatter sets the multi-turn chat provider for agent loop support.
@@ -368,7 +402,6 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		}
 	}
 
-
 	// Step 3: Check context window / chunk.
 	tokenLimit := r.cfg.TokenLimit
 	if tokenLimit <= 0 {
@@ -568,6 +601,11 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 				totalUsage.TotalTokens += agentResult.Usage.TotalTokens
 				agentVerdicts = agentResult.Verdicts
 			}
+			if err == nil && agentResult != nil {
+				// Findings the loop added must sit on lines of the diff like any other.
+				scoped = validateAddedFindings(scoped, diffs)
+				agentResult.Added = countAdded(scoped)
+			}
 			agentAudit = newAgentAudit(agentResult, err, len(allFindings), len(scoped))
 			if err != nil {
 				slog.Warn("agent loop failed, using initial findings", "error", err)
@@ -595,7 +633,7 @@ skipAgent:
 		for _, f := range allFindings {
 			byFile[f.File] = append(byFile[f.File], f)
 		}
-		
+
 		for _, d := range diffs { // diffs now holds only uncached
 			if !reviewedFiles[d.NewPath] {
 				continue
@@ -845,8 +883,6 @@ skipAgent:
 			}
 		}
 	}
-
-
 
 	return len(allFindings) + suppressedBlocking, nil
 }
@@ -1359,11 +1395,27 @@ func (r *Reviewer) getCommitMessage(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
+// addedFindingsCap and addedSeverityCap resolve the explore-mode limits to
+// the values the loop applies, so an unset setting and its default share one
+// cache identity.
+func addedFindingsCap(n int) int {
+	if n <= 0 {
+		return DefaultMaxAddedFindings
+	}
+	return n
+}
+
+func addedSeverityCap(s string) string {
+	return AgentConfig{AddedMaxSeverity: s}.policy().addedMaxSeverity
+}
+
 // reviewCacheModelID builds the model identity that scopes review cache keys.
 // Every setting that changes what the model is asked or how it answers is part
 // of it, so a changed setting cannot replay findings produced under another.
 // Settings at their default, and the thinking level when --api-url makes the
-// provider ignore it, are left out so existing cache entries stay valid.
+// provider ignore it, are left out so existing cache entries stay valid. The
+// agent loop's explore mode and unverifiable-claims policy change which
+// findings it returns, so they are part of the identity while the loop runs.
 func reviewCacheModelID(cfg *config.Config) string {
 	id := cfg.Model
 	if len(cfg.Models) > 1 {
@@ -1374,6 +1426,15 @@ func reviewCacheModelID(cfg *config.Config) string {
 	}
 	if cfg.ThinkingLevel != "" && cfg.APIURL == "" {
 		id += ":thinking=" + cfg.ThinkingLevel
+	}
+	if cfg.AgentLoop {
+		if cfg.AgentMode == AgentModeExplore {
+			id += fmt.Sprintf(":agent_mode=explore:agent_max_added=%d:agent_added_max_severity=%s",
+				addedFindingsCap(cfg.AgentMaxAdded), addedSeverityCap(cfg.AddedMaxSeverity))
+		}
+		if cfg.UnverifiableClaims == UnverifiableClaimsDowngrade {
+			id += ":unverifiable_claims=downgrade"
+		}
 	}
 	if cfg.Version != "" {
 		id += ":version=" + cfg.Version

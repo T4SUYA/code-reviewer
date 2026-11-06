@@ -350,6 +350,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--temperature` | Sampling temperature for review calls, 0-2 (unset = built-in 0.2) | — |
 | `--use-temperature` | Send a temperature with model calls; `--use-temperature=false` sends none so the model's own default applies (conflicts with `--temperature`) | `true` |
 | `--thinking-level` | Thinking level sent with Vertex AI model calls: `minimal`, `low`, `medium` or `high` (case-insensitive; unset = send none) | — |
+| `--operator-config` | Operator config file for settings the repository config may not set (`agent_mcp_servers`); see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) | — |
 | `--extra-rules` | Additional prompt rules | — |
 | `--custom-prompt` | Path to custom system prompt file | — |
 | `--dry-run` | Analyze without posting (with `--ci`, the merge request is still read) | `false` |
@@ -364,8 +365,13 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--max-files` | Maximum files before scope enforcement (0 = unlimited) | `0` |
 | `--scope-action` | Action when scope exceeded: `warn` or `fail` | `warn` |
 | `--audit-log` | Write structured JSONL audit log to file (`files_skipped_detail` lists each unreviewed file with its reason; with `--agent`, includes `agent_verdicts` and an `agent` summary of the loop run; `suppressed` lists findings left out because their thread was [dismissed](#suppressed-findings-in-the-audit-log)) | — |
-| `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition` and `list_directory` | `false` |
+| `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition`, `list_directory`, the tools of any configured [MCP servers](#agent-tools-and-mcp-servers) and the opt-in [dependency tools](#dependency-tools) | `false` |
 | `--agent-scope` | Findings the agent loop examines: `all` or `high_severity_only` (HIGH and CRITICAL only; also `agent_scope` in YAML) | `all` |
+| `--agent-mode` | `refine` (the loop may only drop or modify findings) or `explore` (it may also [add findings](#agent-explore-mode-and-unverifiable-claims) backed by tool evidence; also `agent_mode` in YAML) | `refine` |
+| `--agent-max-added` | Findings an `explore` run may add (also `agent_max_added_findings` in YAML) | `5` |
+| `--agent-added-max-severity` | Highest severity a finding added in `explore` mode keeps (`low`, `medium`, `high`, `critical`; also `agent_added_max_severity` in YAML) | `medium` |
+| `--agent-tools` | Dependency tools the loop may call, comma-separated (`pinned_version`, `registry_lookup`, `read_dependency_source`, `docs_lookup`; also `agent_tools` in YAML) | — |
+| `--unverifiable-claims` | `keep` or `downgrade` a finding that asserts an [unconfirmed fact about something outside the repository](#agent-explore-mode-and-unverifiable-claims) (also `unverifiable_claims` in YAML) | `keep` |
 | `--auto-approve` | Automatically approve MR/PR on clean review (CI mode only) | `false` |
 | `--auto-fix-remote` | Automatically apply inline suggestions via the platform API (CI mode, requires `--comment-mode discussions`) | `false` |
 | `--api-url` | OpenAI-compatible API endpoint (e.g., `http://localhost:11434/v1`) | — |
@@ -417,6 +423,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `REVIEW_TEMPERATURE` | Sampling temperature for review calls (0-2) | — |
 | `REVIEW_USE_TEMPERATURE` | Set to `false` to send no temperature on any model call | `true` |
 | `REVIEW_THINKING_LEVEL` | Thinking level for Vertex AI model calls (`minimal`, `low`, `medium`, `high`); invalid values are ignored with a warning | — |
+| `CODE_REVIEWER_OPERATOR_CONFIG` | Operator config file path (same as `--operator-config`) | — |
 | `REVIEW_CUSTOM_PROMPT` | Path to custom system prompt | — |
 | `CODE_REVIEW_PLATFORM_CONFIG` | Platform rules YAML path, comma-separated paths, or glob | — |
 | `CODE_REVIEW_PLATFORM_REVIEW_MD` | Platform guidelines markdown path or glob | — |
@@ -569,6 +576,116 @@ For repeatable verdicts on unchanged code, `temperature: 0` (or `--temperature 0
 Some models deprecate or reject sampling parameters. Google's Gemini 3 documentation, for example, recommends keeping `temperature` at its default and lists it among the deprecated sampling parameters. For such models set `use_temperature: false` (or `--use-temperature=false`, or `REVIEW_USE_TEMPERATURE=false`): the tool then sends no temperature on any call (review, summary, explain, consensus and the agent loop, over Vertex AI or `--api-url`), and the model's own default applies. It cannot be combined with `temperature`. For repeatable verdicts on such models, prefer multi-model consensus (`--models`).
 
 To choose how much a thinking model reasons before answering, set `thinking_level` (or `--thinking-level`, or `REVIEW_THINKING_LEVEL`) to `minimal`, `low`, `medium` or `high`. The level is sent as the `ThinkingConfig` of every Vertex AI generation request (review, summary, explain, consensus and the agent loop) exactly as given, so a model that does not accept it returns its own API error. When unset, no thinking config is sent and the request is unchanged. It is not sent to `--api-url` endpoints, which log a warning and ignore it.
+
+### Agent Tools and MCP Servers
+
+The `--agent` loop starts with `read_file`, `find_definition` and `list_directory`. To give it more evidence, list [Model Context Protocol](https://modelcontextprotocol.io) servers under `agent_mcp_servers`. Each server is started as a child process over stdio when the loop runs. The setting is off by default: with no `agent_mcp_servers`, the loop's prompt, response schema and behavior are unchanged.
+
+**Trust model.** A server entry names a command the reviewer runs on the CI runner. `.code-reviewer.yaml` is part of the repository under review, and in CI that is the head of the merge request, so its author could otherwise choose which processes run with the runner's credentials. For that reason `agent_mcp_servers` is never read from `.code-reviewer.yaml`: a repository config that sets it is ignored with a warning. It is read only from operator-controlled files:
+
+- the user config file, `$XDG_CONFIG_HOME/code-reviewer/config.yaml` (or `~/.config/code-reviewer/config.yaml`), and
+- the file named by `--operator-config` or `CODE_REVIEWER_OPERATOR_CONFIG`.
+
+In `--ci` mode a file named that way must live outside the checkout; one inside it is ignored with a warning, because the checkout is the change under review. Servers from both files are combined, and names must stay unique. This follows how the platform rules work: the repository can narrow a review, and only the operator can widen what the reviewer executes or trusts.
+
+```yaml
+# operator config (not .code-reviewer.yaml)
+agent_mcp_servers:
+  - name: docs                    # Tools register as "<name>.<tool>", e.g. docs.query-docs
+    command: docs-mcp-server
+    args: ["--stdio"]
+    env_allowlist: [DOCS_API_KEY] # Parent environment variables the server receives (PATH and HOME are always passed)
+    tools_allowlist: [query-docs] # Only these server tools are offered to the model and callable
+    call_timeout: 30s             # Optional: per-call timeout (default 30s)
+    max_output_bytes: 16384       # Optional: per-result size cap (default 16 KiB)
+```
+
+- `name` uses letters, digits, `-` and `_` and starts with a letter; names must be unique. `command` is required.
+- A server tool that is not in `tools_allowlist` is never shown to the model and is refused if called. An empty allowlist exposes nothing.
+- The server process receives `PATH`, `HOME` (package runners such as `npx` need it for their cache) and the variables named in `env_allowlist`; nothing else from the reviewer's environment (API keys, CI tokens) is passed on. When the loop ends, the server and every process it started are killed, so a launcher that spawns the real server as a grandchild leaves nothing behind (Unix; on Windows only the launched process is stopped).
+- A call that exceeds `call_timeout` fails and the loop continues; output beyond `max_output_bytes` is cut and marked as truncated. Whatever the server sets, no untrusted tool result exceeds 64 KiB in the conversation.
+- Output of MCP tools is untrusted. It reaches the model wrapped in `<untrusted_tool_output>` tags, and the prompt tells the model to treat it as evidence about the code and never to follow instructions inside it. Tool descriptions the server supplies are reduced to one line of at most 300 characters with `<`, `>` and `&` escaped before they enter the prompt.
+- A tool whose argument schema the response schema cannot express exactly (`anyOf`/`oneOf`/`allOf`, `$ref`, objects open to extra keys, properties or array items without a type) is skipped with a warning; the other tools and the loop are unaffected.
+- A server that fails to start is skipped with a warning; the loop runs with the remaining tools.
+
+Go programs that embed `pkg/agent` can register their own tools with `agent.Config.ExtraTools` (a name, a description, a JSON Schema for the arguments and an execute function); they appear in the prompt and the response schema the same way. `agent.Config.DependencyTools` and `DependencyToolOptions` enable the dependency tools below.
+
+#### Dependency tools
+
+A finding that says an API, option or version does not exist cannot be disproved with the three repository tools. Four built-in tools give the loop evidence for such claims. List the ones you want under `agent_tools` in `.code-reviewer.yaml`; none is on by default, and with the setting absent the prompt, response schema and behavior are unchanged.
+
+```yaml
+agent_tools: [pinned_version, registry_lookup, read_dependency_source, docs_lookup]
+```
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `pinned_version` | `package`, `ecosystem?` | Reads the checkout's `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `package.json`, `go.mod`, `go.sum`, `uv.lock`, `poetry.lock`, `requirements*.txt`, `pyproject.toml`, `pom.xml`, `gradle.lockfile` and `.terraform.lock.hcl`, plus `.nvmrc`, `engines`, `.python-version` and `requires-python` for the `node` and `python` runtimes. Returns each pinned version with its file, or "No pin found". No network. |
+| `registry_lookup` | `ecosystem`, `package`, `version?` | Asks npm, PyPI, the Go module proxy, Maven Central, the Terraform or OpenTofu registry, or Docker Hub (the version is the tag) whether the package and version exist, when the version was published, the latest version and whether it is deprecated or yanked, where the registry reports it. |
+| `read_dependency_source` | `package`, `path?`, `start_line?`, `end_line?` | Reads a file of an installed dependency: `node_modules/<package>` (typings included) or the Go module cache at the version `go.mod` requires. Paths stay inside the package directory (no `..`, no symlinks out). Answers "not installed" when the checkout has no copy, which says nothing about whether the API exists. No network. |
+| `docs_lookup` | `library`, `version`, `topic` | Fetches version-pinned documentation from the [Context7](https://context7.com) HTTP API for a library id such as `/microsoft/playwright`. |
+
+**What leaves the machine.** `registry_lookup` and `docs_lookup` are the only tools that use the network. `registry_lookup` sends an ecosystem, a package and a version; `docs_lookup` sends a library id, a version and a topic. The model chooses those values, and the reviewer checks each one before any request:
+
+- It must match a strict character set for its role (a package name in the ecosystem's own form, a version of letters, digits and `. _ + ~ -`, a topic of at most 80 characters of letters, digits, spaces and `. _ - /`; the docs query is a fixed template around the topic). No component of a coordinate may be `.` or `..`.
+- It must not look like a credential: values with the shape of a known token (GitHub, GitLab, Slack, AWS, Google, JWT, PEM, bearer), a long hex digest, or a long random-looking run of letters and digits are rejected and nothing is sent.
+- Every lookup is logged with its ecosystem, package, version and topic.
+
+These checks narrow what can be sent to short identifier-shaped strings and reject the obvious secrets. They do not prove a string harmless: an identifier-shaped string can still carry a few words of information, and the check for secret shapes is a heuristic. If your reviewed code must not influence any outbound request at all, leave `registry_lookup` and `docs_lookup` out of `agent_tools`; `pinned_version` and `read_dependency_source` never use the network.
+
+Each ecosystem is called only on the host of its base URL, redirects to another host are refused, and every request is bounded by a timeout and a response cap. A lookup that fails (timeout, HTTP error, rate limit) is reported as "result unknown, not evidence that the package or version does not exist". Strings a registry supplies (dates, versions, deprecation notices) are reduced to one escaped line and capped before they reach the model; documentation text has control characters removed and is capped.
+
+All four tools return content that comes from outside the reviewer (the repository, a dependency or a network service), so their output is untrusted: it reaches the model inside `<untrusted_tool_output>` tags and the prompt tells the model to treat it only as evidence. `pinned_version` prints a version only if it parses as a version or range (anything else, prose included, reads as `(unparseable)`) and prints file paths as one escaped line; `read_dependency_source` lists directory entries the same way. Local tools stop when the loop's context is cancelled.
+
+**Operator-only options.** `agent_tool_options` sets where the tools call and what they read, so like `agent_mcp_servers` it is never read from `.code-reviewer.yaml`: a repository config that sets it is ignored with a warning. Put it in the operator config (see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) for where that file lives):
+
+```yaml
+# operator config
+agent_tool_options:                  # All optional
+  registry_urls: {npm: "https://npm-mirror.example.org"}   # Mirror per ecosystem (https; http only for loopback)
+  registry_timeout: 8s               # Per request (default 8s)
+  max_response_bytes: 8388608        # Cap on a registry response (default 8 MiB)
+  docs_url: https://context7.com     # Default
+  docs_api_key_env: CONTEXT7_API_KEY # Default; the key is optional
+  docs_max_output_bytes: 8192        # Documentation text returned (default 8 KiB)
+  go_mod_cache: ""                   # Default: GOMODCACHE, then `go env GOMODCACHE`
+```
+
+The Context7 API key is read from the variable named by `docs_api_key_env` and sent only to the default docs host (`https://context7.com`): a `docs_url` override never receives it, so the key cannot be redirected to another host.
+
+`read_dependency_source` needs the dependency installed in the checkout (for example `npm ci --ignore-scripts` before the review); the reviewer never installs anything itself.
+
+### Agent Explore Mode and Unverifiable Claims
+
+Two opt-in settings change what the `--agent` loop may do. With neither set, the loop's prompt, response schema and behavior are unchanged.
+
+**`agent_mode: explore`** (`--agent-mode explore`). By default the loop may only drop or modify the findings it is given. In `explore` mode it may also add findings it establishes with its own tool calls:
+
+- Every tool result carries an `id` (`t1`, `t2`, ...). An added finding lists `evidence`: the `tool_call_id`, `file`, `start_line` and `end_line` of a `read_file` call of the same run. The loop checks each item in code against the lines that call actually returned, not the lines it asked for: a file shorter than the requested range, or a result cut at the size cap, leaves less to cite, and a citation of `[1, 99999]` is refused. The cited range must lie inside the returned lines, and a range in the finding's own file must contain the finding's own `line`. A finding without checkable evidence, or one that sits only on removed lines (no `line` in the working tree to read), is dropped.
+- An added finding has `origin: agent_explore` in the JSON output, a body ending in `Evidence read by the agent loop: ...`, and the verdict `added` in the audit log (`agent_verdicts`, plus `added` in the `agent` summary).
+- Added findings go through the same line validation as the review pass, rule severity locks and inline suppressions. A finding that matches an initial finding, an earlier added one, or a finding the `agent_scope` kept out of the loop (same file and category within three lines, as in deduplication) is dropped, including when the loop dismissed the initial finding.
+- At most `agent_max_added_findings` (`--agent-max-added`, default 5) findings are added per run; the first ones in the model's order are kept.
+- An added finding rests on the loop's own reading rather than on the diff review, so it keeps at most `agent_added_max_severity` (`--agent-added-max-severity`, default `medium`): a higher severity is lowered to it, unless a configured rule fixes the finding's severity. Because `min_severity` is applied afterwards, a ceiling below `min_severity` means added findings are never reported (a warning says so when the settings load). Raise the ceiling, or lower `min_severity`, to surface them.
+
+**`unverifiable_claims: downgrade`** (`--unverifiable-claims downgrade`). A finding that asserts a fact about something outside the repository (a library, framework or provider API, option, version, runtime, URL format or language syntax) can be a confident guess from stale training data. With `downgrade`, the reviewer lowers such a finding to `LOW` unless a tool confirmed the fact, and appends the note "Note: not verified with a tool." to its body. The policy is enforced in code from structured fields, not from the model's prose:
+
+- Before it finishes, the loop reports with a `claims` action which findings assert outside facts: `{"action": "claims", "claims": [{"index": 0, "external_claim": true, "verified_by": ["t1"]}]}`. `index` is the finding's position in the order it was given to the loop (from 0), `verified_by` lists the ids of tool calls whose results confirm the fact. The action can be sent more than once (a later entry for an index replaces an earlier one); the loop then finishes with `done` or with the `findings` action, so it never has to echo every finding. A finding returned by `findings` may carry `external_claim` and `verified_by` itself, and those fields take precedence.
+- Only a conclusive answer from a dependency tool (`pinned_version`, `registry_lookup`, `read_dependency_source`, `docs_lookup`) or an [MCP tool](#agent-tools-and-mcp-servers) counts as confirmation. Reading repository files with `read_file`, `find_definition` or `list_directory` does not confirm a fact about something outside the repository, a failed call does not, and neither does an answer that found nothing: "not installed", "no pin found", "package exists: no", "no documentation found" confirm and refute nothing. An MCP tool's answer counts unless it is empty.
+- Only a finding reported with `external_claim: true` and no confirming tool call is lowered. A finding the loop never reported a claim for (for example it finished with `done` and no `claims`) is kept as it is, and a warning logs how many findings were kept without a reported claim. A finding reported with `external_claim: false` is left as it is. A finding whose severity a configured rule fixes keeps its severity and gets the note only.
+- The policy applies when the loop finishes (`done` or `findings`). One that stops on its budget, timeout, iteration limit or an error leaves findings unverified and untouched. The final turn carries no `claims` action, so the loop reports claims before it. `min_severity` filters apply afterwards, so a `LOW` finding is reported only if `min_severity` allows it. The audit log records the verdict `downgraded` and a `downgraded` count.
+- Findings the loop adds in `explore` mode are subject to the same rule.
+
+Both settings are part of the review cache identity while the loop runs, so changing them re-reviews cached diffs; leaving them at their defaults keeps existing cache entries valid.
+
+```yaml
+agent: true
+agent_mode: explore
+agent_max_added_findings: 3
+agent_added_max_severity: medium
+unverifiable_claims: downgrade
+```
+
+In GitHub Actions these settings are inputs of the action: `agent-tools`, `agent-mode`, `agent-max-added`, `agent-added-max-severity` and `unverifiable-claims`. The trusted-only settings (`agent_mcp_servers`, `agent_tool_options`) have no input; see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers).
 
 ### Auto-Approve
 

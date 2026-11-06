@@ -2,6 +2,7 @@ package reviewer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,52 +12,46 @@ import (
 	"unicode/utf8"
 )
 
-// ToolResult holds the output of a tool invocation.
-type ToolResult struct {
-	Tool   string `json:"tool"`
-	Output string `json:"output"`
-	Error  string `json:"error,omitempty"`
-}
-
-// ToolRegistry holds available agent tools scoped to a repo root.
-type ToolRegistry struct {
-	repoRoot string
-}
-
-// NewToolRegistry creates a tool registry scoped to the given repo root.
-func NewToolRegistry(repoRoot string) *ToolRegistry {
-	return &ToolRegistry{repoRoot: repoRoot}
-}
-
-// Execute runs a tool by name with the given arguments.
-func (r *ToolRegistry) Execute(ctx context.Context, tool string, args map[string]any) ToolResult {
-	switch tool {
-	case "read_file":
-		return r.readFile(ctx, args)
-	case "find_definition":
-		return r.findDefinition(ctx, args)
-	case "list_directory":
-		return r.listDirectory(ctx, args)
-	default:
-		return ToolResult{Tool: tool, Error: fmt.Sprintf("unknown tool: %s", tool)}
+// registerRepoTools registers the read-only repository tools every registry
+// starts with. They are bound to the registry's repo root.
+func (r *ToolRegistry) registerRepoTools() {
+	str := map[string]any{"type": "string"}
+	integer := map[string]any{"type": "integer"}
+	for _, t := range []Tool{
+		{
+			Name:        "read_file",
+			Description: "Read file contents from the repository.",
+			Usage: `Args: {"path": "<relative path>", "start_line": <optional int>, "end_line": <optional int>}
+Max 32 KiB returned. Lines are 1-indexed.`,
+			InputSchema: ObjectSchema(map[string]any{"path": str, "start_line": integer, "end_line": integer}, "path"),
+			Execute:     r.readFile,
+		},
+		{
+			Name:        "find_definition",
+			Description: "Find where a symbol is defined in the codebase.",
+			Usage: `Args: {"symbol": "<symbol name>"}
+Returns up to 10 matches with surrounding context.`,
+			InputSchema: ObjectSchema(map[string]any{"symbol": str}, "symbol"),
+			Execute:     r.findDefinition,
+		},
+		{
+			Name:        "list_directory",
+			Description: "List files in a directory.",
+			Usage: `Args: {"path": "<relative path>"}
+Returns up to 200 entries.`,
+			InputSchema: ObjectSchema(map[string]any{"path": str}, "path"),
+			Execute:     r.listDirectory,
+		},
+	} {
+		if err := r.Register(t); err != nil {
+			panic(err) // The built-in names are distinct constants.
+		}
 	}
 }
 
-// ToolSchemas returns the tool descriptions for the model prompt.
+// ToolSchemas returns the prompt description of the built-in tools.
 func ToolSchemas() string {
-	return `Available tools (respond with JSON {"action": "tool", "tool": "<name>", "args": {<args>}}):
-
-1. read_file: Read file contents from the repository.
-   Args: {"path": "<relative path>", "start_line": <optional int>, "end_line": <optional int>}
-   Max 32 KiB returned. Lines are 1-indexed.
-
-2. find_definition: Find where a symbol is defined in the codebase.
-   Args: {"symbol": "<symbol name>"}
-   Returns up to 10 matches with surrounding context.
-
-3. list_directory: List files in a directory.
-   Args: {"path": "<relative path>"}
-   Returns up to 200 entries.`
+	return NewToolRegistry("").Prompt()
 }
 
 func (r *ToolRegistry) resolvePath(relPath string) (string, error) {
@@ -90,20 +85,20 @@ func (r *ToolRegistry) resolvePath(relPath string) (string, error) {
 	return resolved, nil
 }
 
-func (r *ToolRegistry) readFile(ctx context.Context, args map[string]any) ToolResult {
+func (r *ToolRegistry) readFile(_ context.Context, args map[string]any) (string, error) {
 	path, ok := args["path"].(string)
 	if !ok {
-		return ToolResult{Tool: "read_file", Error: "missing or invalid 'path' argument"}
+		return "", errors.New("missing or invalid 'path' argument")
 	}
 
 	resolved, err := r.resolvePath(path)
 	if err != nil {
-		return ToolResult{Tool: "read_file", Error: err.Error()}
+		return "", err
 	}
 
 	f, err := os.Open(resolved)
 	if err != nil {
-		return ToolResult{Tool: "read_file", Error: fmt.Sprintf("failed to read file: %v", err)}
+		return "", fmt.Errorf("failed to read file: %v", err)
 	}
 	defer f.Close() //nolint:errcheck
 
@@ -146,7 +141,7 @@ func (r *ToolRegistry) readFile(ctx context.Context, args map[string]any) ToolRe
 		endLine = len(lines)
 	}
 	if startLine > endLine {
-		return ToolResult{Tool: "read_file", Error: "start_line is greater than end_line"}
+		return "", errors.New("start_line is greater than end_line")
 	}
 
 	selected := lines[startLine-1 : endLine]
@@ -154,7 +149,7 @@ func (r *ToolRegistry) readFile(ctx context.Context, args map[string]any) ToolRe
 	if truncated {
 		output += "\n[... truncated at 32 KiB ...]"
 	}
-	return ToolResult{Tool: "read_file", Output: output}
+	return output, nil
 }
 
 func isDefinition(line string, symbol string) bool {
@@ -179,10 +174,10 @@ func isDefinition(line string, symbol string) bool {
 	return false
 }
 
-func (r *ToolRegistry) findDefinition(ctx context.Context, args map[string]any) ToolResult {
+func (r *ToolRegistry) findDefinition(ctx context.Context, args map[string]any) (string, error) {
 	symbol, ok := args["symbol"].(string)
 	if !ok {
-		return ToolResult{Tool: "find_definition", Error: "missing or invalid 'symbol' argument"}
+		return "", errors.New("missing or invalid 'symbol' argument")
 	}
 
 	var matches []string
@@ -190,11 +185,11 @@ func (r *ToolRegistry) findDefinition(ctx context.Context, args map[string]any) 
 
 	absRoot, err := filepath.Abs(r.repoRoot)
 	if err != nil {
-		return ToolResult{Tool: "find_definition", Error: err.Error()}
+		return "", err
 	}
 	absRoot, err = filepath.EvalSymlinks(absRoot)
 	if err != nil {
-		return ToolResult{Tool: "find_definition", Error: err.Error()}
+		return "", err
 	}
 
 	err = filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, err error) error {
@@ -255,30 +250,30 @@ func (r *ToolRegistry) findDefinition(ctx context.Context, args map[string]any) 
 	})
 
 	if err != nil {
-		return ToolResult{Tool: "find_definition", Error: fmt.Sprintf("error walking directory: %v", err)}
+		return "", fmt.Errorf("error walking directory: %v", err)
 	}
 
 	if len(matches) == 0 {
-		return ToolResult{Tool: "find_definition", Output: "No definitions found."}
+		return "No definitions found.", nil
 	}
 
-	return ToolResult{Tool: "find_definition", Output: strings.Join(matches, "\n")}
+	return strings.Join(matches, "\n"), nil
 }
 
-func (r *ToolRegistry) listDirectory(ctx context.Context, args map[string]any) ToolResult {
+func (r *ToolRegistry) listDirectory(_ context.Context, args map[string]any) (string, error) {
 	path, ok := args["path"].(string)
 	if !ok {
-		return ToolResult{Tool: "list_directory", Error: "missing or invalid 'path' argument"}
+		return "", errors.New("missing or invalid 'path' argument")
 	}
 
 	resolved, err := r.resolvePath(path)
 	if err != nil {
-		return ToolResult{Tool: "list_directory", Error: err.Error()}
+		return "", err
 	}
 
 	entries, err := os.ReadDir(resolved)
 	if err != nil {
-		return ToolResult{Tool: "list_directory", Error: fmt.Sprintf("failed to read directory: %v", err)}
+		return "", fmt.Errorf("failed to read directory: %v", err)
 	}
 
 	var output []string
@@ -294,5 +289,5 @@ func (r *ToolRegistry) listDirectory(ctx context.Context, args map[string]any) T
 		output = append(output, entry.Name()+indicator)
 	}
 
-	return ToolResult{Tool: "list_directory", Output: strings.Join(output, "\n")}
+	return strings.Join(output, "\n"), nil
 }

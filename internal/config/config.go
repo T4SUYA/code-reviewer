@@ -216,10 +216,18 @@ type Config struct {
 	MaxTokens int // Maximum total tokens per review (0 = unlimited).
 
 	// Agent refinement loop.
-	AgentLoop          bool          // Enable agent refinement loop.
-	AgentMaxIterations int           // Max refinement iterations (default 3).
-	AgentTimeout       time.Duration // Wall-clock timeout for agent loop (default 3m).
-	AgentScope         string        // Findings the agent loop examines: "all" (default) or "high_severity_only".
+	AgentLoop          bool             // Enable agent refinement loop.
+	AgentMaxIterations int              // Max refinement iterations (default 3).
+	AgentTimeout       time.Duration    // Wall-clock timeout for agent loop (default 3m).
+	AgentMCPServers    []AgentMCPServer // MCP servers whose tools the agent loop may call (default none); operator config only.
+	AgentTools         []string         // Dependency tools the agent loop may call: pinned_version, registry_lookup, read_dependency_source, docs_lookup (default none).
+	AgentToolOptions   AgentToolOptions // Mirrors, docs URL and key variable, timeouts, caps and cache location of the dependency tools; operator config only.
+	OperatorConfig     string           // Path of the operator-trusted config file (--operator-config).
+	AgentScope         string           // Findings the agent loop examines: "all" (default) or "high_severity_only".
+	AgentMode          string           // "refine" (default: the loop may only drop or modify findings) or "explore" (it may also add findings it establishes with tool evidence).
+	AgentMaxAdded      int              // Findings the loop may add per run in explore mode (default 5).
+	AddedMaxSeverity   string           // Highest severity an explore-added finding keeps: "medium" (default), "low", "high" or "critical"; higher ones are lowered to it.
+	UnverifiableClaims string           // "keep" (default) or "downgrade" findings whose claim about something outside the repository the loop could not confirm with a tool result.
 
 	// Scope enforcement.
 	MaxFiles    int
@@ -306,6 +314,11 @@ type repoConfig struct {
 	AgentMaxIterations       int      `yaml:"agent_max_iterations"`
 	AgentTimeout             string   `yaml:"agent_timeout"`
 	AgentScope               string   `yaml:"agent_scope"`
+	AgentTools               []string `yaml:"agent_tools"`
+	AgentMode                string   `yaml:"agent_mode"`
+	AgentMaxAdded            *int     `yaml:"agent_max_added_findings"`
+	UnverifiableClaims       string   `yaml:"unverifiable_claims"`
+	AgentAddedMaxSeverity    string   `yaml:"agent_added_max_severity"`
 
 	IntentChecks *model.IntentChecks `yaml:"intent_checks"`
 }
@@ -367,6 +380,12 @@ func Load() (*Config, error) {
 
 	// Auto-detect CI environment.
 	cfg.loadCIEnv()
+
+	// Operator-trusted settings: user config file and --operator-config.
+	// Never read from the repository config.
+	if err := cfg.loadOperatorConfig(); err != nil {
+		return nil, err
+	}
 
 	// Layer 4: Platform configuration and guidelines.
 	// Always loaded — even for product profile, rule names are needed
@@ -495,6 +514,7 @@ func (c *Config) applyRepoConfig(data []byte) error {
 		if _, ok := raw["profile"]; ok {
 			slog.Warn("ignoring 'profile' in .code-reviewer.yaml: profiles are controlled by CI config, not repo-level files")
 		}
+		warnOperatorOnlyKeys(raw)
 	}
 
 	if rc.Model != "" {
@@ -658,7 +678,22 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.AgentScope != "" {
 		c.AgentScope = rc.AgentScope
 	}
-	return nil
+	if len(rc.AgentTools) > 0 {
+		c.AgentTools = rc.AgentTools
+	}
+	if rc.AgentMode != "" {
+		c.AgentMode = rc.AgentMode
+	}
+	if rc.AgentMaxAdded != nil {
+		c.AgentMaxAdded = *rc.AgentMaxAdded
+	}
+	if rc.AgentAddedMaxSeverity != "" {
+		c.AddedMaxSeverity = rc.AgentAddedMaxSeverity
+	}
+	if rc.UnverifiableClaims != "" {
+		c.UnverifiableClaims = rc.UnverifiableClaims
+	}
+	return validateAgentTools(c.AgentTools, c.AgentToolOptions)
 }
 
 func (c *Config) loadEnv() {
@@ -952,10 +987,16 @@ func (c *Config) loadFlags() error {
 	productModel := fs.String("product-model", "", "Model override when --profile=product")
 	platformVisibility := fs.String("platform-visibility", "", "Platform findings visibility: public (default) or security-team-only")
 
+	operatorConfig := fs.String("operator-config", "", "Operator-trusted config file for settings the repository config may not set (agent_mcp_servers)")
 	agent := fs.Bool("agent", false, "Enable agent refinement loop")
 	agentIterations := fs.Int("agent-iterations", 3, "Max agent refinement iterations")
 	agentTimeout := fs.Duration("agent-timeout", 3*time.Minute, "Agent loop timeout")
 	agentScope := fs.String("agent-scope", "", "Findings the agent loop examines: all (default) or high_severity_only")
+	agentTools := fs.String("agent-tools", "", "Dependency tools the agent loop may call, comma-separated: pinned_version, registry_lookup, read_dependency_source, docs_lookup")
+	agentMode := fs.String("agent-mode", "", "Agent loop mode: refine (default, may only drop or modify findings) or explore (may also add findings backed by tool evidence)")
+	agentMaxAdded := fs.Int("agent-max-added", 5, "Findings the agent loop may add per run in explore mode")
+	agentAddedMaxSeverity := fs.String("agent-added-max-severity", "", "Highest severity a finding the agent loop adds in explore mode keeps: low, medium (default), high or critical")
+	unverifiableClaims := fs.String("unverifiable-claims", "", "Findings asserting an unconfirmed fact about something outside the repository: keep (default) or downgrade")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -1159,6 +1200,9 @@ func (c *Config) loadFlags() error {
 	if *platformVisibility != "" {
 		c.PlatformVisibility = *platformVisibility
 	}
+	if *operatorConfig != "" {
+		c.OperatorConfig = *operatorConfig
+	}
 	// Agent flags: apply only when explicitly set, so YAML defaults survive.
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -1170,6 +1214,16 @@ func (c *Config) loadFlags() error {
 			c.AgentTimeout = *agentTimeout
 		case "agent-scope":
 			c.AgentScope = *agentScope
+		case "agent-tools":
+			c.AgentTools = splitAndTrim(*agentTools)
+		case "agent-mode":
+			c.AgentMode = *agentMode
+		case "agent-max-added":
+			c.AgentMaxAdded = *agentMaxAdded
+		case "agent-added-max-severity":
+			c.AddedMaxSeverity = *agentAddedMaxSeverity
+		case "unverifiable-claims":
+			c.UnverifiableClaims = *unverifiableClaims
 		}
 	})
 	// Apply agent defaults if not set by either flag or YAML.
@@ -1341,6 +1395,43 @@ func (c *Config) validate() error {
 		// Valid.
 	default:
 		return &ConfigError{Err: fmt.Errorf("invalid agent scope %q: must be all or high_severity_only", c.AgentScope)}
+	}
+
+	if c.AgentMode == "" {
+		c.AgentMode = "refine"
+	}
+	switch c.AgentMode {
+	case "refine", "explore":
+		// Valid.
+	default:
+		return &ConfigError{Err: fmt.Errorf("invalid agent mode %q: must be refine or explore", c.AgentMode)}
+	}
+	if c.AddedMaxSeverity == "" {
+		c.AddedMaxSeverity = "MEDIUM"
+	}
+	addedCap, err := ParseSeverity(c.AddedMaxSeverity)
+	if err != nil {
+		return &ConfigError{Err: fmt.Errorf("invalid agent added max severity: %w", err)}
+	}
+	c.AddedMaxSeverity = strings.ToUpper(strings.TrimSpace(c.AddedMaxSeverity))
+	if c.AgentMode == "explore" && addedCap < c.MinSeverity {
+		slog.Warn("agent_added_max_severity is below min_severity: findings the loop adds are capped under the reporting floor and will not be reported",
+			"agent_added_max_severity", c.AddedMaxSeverity, "min_severity", c.MinSeverity)
+	}
+	if c.UnverifiableClaims == "" {
+		c.UnverifiableClaims = "keep"
+	}
+	switch c.UnverifiableClaims {
+	case "keep", "downgrade":
+		// Valid.
+	default:
+		return &ConfigError{Err: fmt.Errorf("invalid unverifiable claims policy %q: must be keep or downgrade", c.UnverifiableClaims)}
+	}
+	if c.AgentMaxAdded == 0 {
+		c.AgentMaxAdded = 5
+	}
+	if c.AgentMaxAdded < 0 {
+		return &ConfigError{Err: fmt.Errorf("invalid agent max added findings %d: must be positive", c.AgentMaxAdded)}
 	}
 
 	// Validate platform visibility.
