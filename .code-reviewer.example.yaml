@@ -160,15 +160,22 @@ extra_rules: |
 
 # What the agent loop may do. "refine" (default) lets it only drop or modify the
 # findings it is given. "explore" also lets it add findings backed by read_file
-# evidence from the same run, at most agent_max_added_findings per run (default 5).
+# evidence from the same run (the cited lines must be lines the call returned),
+# at most agent_max_added_findings per run (default 5), each capped at
+# agent_added_max_severity (default medium). With min_severity above that cap,
+# added findings are never reported.
 # agent_mode: explore
 # agent_max_added_findings: 5
+# agent_added_max_severity: medium
 
 # "keep" (default) leaves a finding as it is when it asserts a fact about
 # something outside the repository (library or provider API, option, version,
 # runtime, URL format, language syntax) that no tool result confirmed.
-# "downgrade" lowers such a finding to LOW with a "not verified against the
-# pinned version" note, decided from per-finding fields the loop must return.
+# "downgrade" lowers such a finding to LOW with a "not verified with a tool"
+# note. Only a conclusive answer of a dependency tool (agent_tools) or an MCP
+# tool confirms a claim; read_file and "not found" answers do not. The loop
+# reports claims per finding, and a finding it does not report on counts as
+# unconfirmed.
 # unverifiable_claims: downgrade
 
 # NOTE: agent_mcp_servers (MCP servers whose tools the agent loop may call) is
