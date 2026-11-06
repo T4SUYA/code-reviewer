@@ -367,6 +367,9 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--audit-log` | Write structured JSONL audit log to file (`files_skipped_detail` lists each unreviewed file with its reason; with `--agent`, includes `agent_verdicts` and an `agent` summary of the loop run; `suppressed` lists findings left out because their thread was [dismissed](#suppressed-findings-in-the-audit-log)) | — |
 | `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition`, `list_directory`, the tools of any configured [MCP servers](#agent-tools-and-mcp-servers) and the opt-in [dependency tools](#dependency-tools) | `false` |
 | `--agent-scope` | Findings the agent loop examines: `all` or `high_severity_only` (HIGH and CRITICAL only; also `agent_scope` in YAML) | `all` |
+| `--agent-mode` | `refine` (the loop may only drop or modify findings) or `explore` (it may also [add findings](#agent-explore-mode-and-unverifiable-claims) backed by tool evidence; also `agent_mode` in YAML) | `refine` |
+| `--agent-max-added` | Findings an `explore` run may add (also `agent_max_added_findings` in YAML) | `5` |
+| `--unverifiable-claims` | `keep` or `downgrade` a finding that asserts an [unconfirmed fact about something outside the repository](#agent-explore-mode-and-unverifiable-claims) (also `unverifiable_claims` in YAML) | `keep` |
 | `--auto-approve` | Automatically approve MR/PR on clean review (CI mode only) | `false` |
 | `--auto-fix-remote` | Automatically apply inline suggestions via the platform API (CI mode, requires `--comment-mode discussions`) | `false` |
 | `--api-url` | OpenAI-compatible API endpoint (e.g., `http://localhost:11434/v1`) | — |
@@ -649,6 +652,26 @@ agent_tool_options:                  # All optional
 The Context7 API key is read from the variable named by `docs_api_key_env` and sent only to the default docs host (`https://context7.com`): a `docs_url` override never receives it, so the key cannot be redirected to another host.
 
 `read_dependency_source` needs the dependency installed in the checkout (for example `npm ci --ignore-scripts` before the review); the reviewer never installs anything itself.
+
+### Agent Explore Mode and Unverifiable Claims
+
+Two opt-in settings change what the `--agent` loop may do. With neither set, the loop's prompt, response schema and behavior are unchanged.
+
+**`agent_mode: explore`** (`--agent-mode explore`). By default the loop may only drop or modify the findings it is given. In `explore` mode it may also add findings it establishes with its own tool calls:
+
+- Every tool result carries an `id` (`t1`, `t2`, ...). An added finding lists `evidence`: the `tool_call_id`, `file`, `start_line` and `end_line` of a `read_file` call of the same run. The loop checks each item in code: the call must exist, have succeeded, have read that file, and its line range must overlap the cited lines; one item must be in the finding's own file. A finding without checkable evidence is dropped.
+- An added finding has `origin: agent_explore` in the JSON output, a body ending in `Evidence read by the agent loop: ...`, and the verdict `added` in the audit log (`agent_verdicts`, plus `added` in the `agent` summary).
+- Added findings go through the same line validation as the review pass, rule severity locks and inline suppressions. A finding that matches an initial finding, an earlier added one, or a finding the `agent_scope` kept out of the loop (same file and category within three lines, as in deduplication) is dropped, including when the loop dismissed the initial finding.
+- At most `agent_max_added_findings` (`--agent-max-added`, default 5) findings are added per run; the first ones in the model's order are kept.
+
+**`unverifiable_claims: downgrade`** (`--unverifiable-claims downgrade`). A finding that asserts a fact about something outside the repository (a library, framework or provider API, option, version, runtime, URL format or language syntax) can be a confident guess from stale training data. With `downgrade`, each finding the loop returns must also say `external_claim` (true or false) and `verified_by` (the tool call ids whose results confirm the claim). The reviewer enforces the policy from those fields, not from the model's prose: a finding with `external_claim: true` and no successful tool call in `verified_by` is lowered to `LOW` and its body gets the note "Note: not verified against the pinned version." A finding whose severity a configured rule fixes keeps its severity and gets the note only. Findings with `external_claim: false`, or a confirming tool result (from `read_file`, `find_definition`, or an [MCP tool](#agent-tools-and-mcp-servers) such as a docs lookup), are unchanged. Because the answer must carry these fields, the response schema offers no `done` action in this mode. The policy applies to findings the loop returned; one that stops on its budget, timeout or an error leaves findings unverified and untouched. `min_severity` filters apply afterwards, so a `LOW` finding is still reported only if `min_severity` allows it. The audit log records the verdict `downgraded` and a `downgraded` count.
+
+```yaml
+agent: true
+agent_mode: explore
+agent_max_added_findings: 3
+unverifiable_claims: downgrade
+```
 
 ### Auto-Approve
 
