@@ -4,29 +4,34 @@
 // evidence instead of memory.
 //
 // pinned_version and read_dependency_source read the checkout and never use
-// the network. registry_lookup does, and sends only values that passed the
-// checks in validate.go and secret.go: short identifiers, never repository
-// code, diff text or paths.
+// the network. registry_lookup and docs_lookup do, and send only values that
+// passed the checks in validate.go and secret.go: short identifiers, never
+// repository code, diff text or paths.
 package deptools
 
 import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 )
 
 // Tool names a user can list under agent_tools.
 const (
-	ToolPinnedVersion        = "pinned_version"
-	ToolRegistryLookup       = "registry_lookup"
-	ToolReadDependencySource = "read_dependency_source"
-	defaultRegistryTimeout   = 8 * time.Second
-	defaultMaxResponseBytes  = 8 << 20
+	ToolPinnedVersion         = "pinned_version"
+	ToolRegistryLookup        = "registry_lookup"
+	ToolReadDependencySource  = "read_dependency_source"
+	ToolDocsLookup            = "docs_lookup"
+	defaultRegistryTimeout    = 8 * time.Second
+	defaultMaxResponseBytes   = 8 << 20
+	defaultDocsMaxOutputBytes = 8 << 10
+	defaultDocsURL            = "https://context7.com"
+	defaultDocsAPIKeyEnv      = "CONTEXT7_API_KEY"
 )
 
 // AllNames lists every tool name Build accepts.
-var AllNames = []string{ToolPinnedVersion, ToolRegistryLookup, ToolReadDependencySource}
+var AllNames = []string{ToolPinnedVersion, ToolRegistryLookup, ToolReadDependencySource, ToolDocsLookup}
 
 // Spec describes one tool in a form independent of the agent loop's types.
 type Spec struct {
@@ -53,6 +58,14 @@ type Options struct {
 	RegistryTimeout time.Duration
 	// MaxResponseBytes caps how much of a registry response is read (default 8 MiB).
 	MaxResponseBytes int64
+	// DocsURL is the Context7 base URL (default https://context7.com).
+	DocsURL string
+	// DocsAPIKeyEnv names the environment variable holding the Context7 API key
+	// (default CONTEXT7_API_KEY). The key is optional and is sent only to the
+	// default docs host, never to a DocsURL override.
+	DocsAPIKeyEnv string
+	// DocsMaxOutputBytes caps the documentation text returned (default 8 KiB).
+	DocsMaxOutputBytes int
 	// GoModCache is the Go module cache directory. Empty asks the environment
 	// (GOMODCACHE, then `go env GOMODCACHE`).
 	GoModCache string
@@ -77,6 +90,9 @@ func Build(names []string, opts Options) ([]Spec, error) {
 	if err := validateRegistryURLs(opts.RegistryURLs); err != nil {
 		return nil, err
 	}
+	if _, err := parseBaseURL(opts.DocsURL); err != nil {
+		return nil, fmt.Errorf("docs URL: %w", err)
+	}
 	var specs []Spec
 	seen := map[string]bool{}
 	for _, name := range names {
@@ -91,6 +107,8 @@ func Build(names []string, opts Options) ([]Spec, error) {
 			specs = append(specs, registryLookupSpec(opts))
 		case ToolReadDependencySource:
 			specs = append(specs, readDependencySourceSpec(opts))
+		case ToolDocsLookup:
+			specs = append(specs, docsLookupSpec(opts))
 		default:
 			return nil, fmt.Errorf("unknown agent tool %q (known: %v)", name, AllNames)
 		}
@@ -105,8 +123,19 @@ func (o Options) withDefaults() Options {
 	if o.MaxResponseBytes <= 0 {
 		o.MaxResponseBytes = defaultMaxResponseBytes
 	}
+	if o.DocsURL == "" {
+		o.DocsURL = defaultDocsURL
+	}
+	if o.DocsAPIKeyEnv == "" {
+		o.DocsAPIKeyEnv = defaultDocsAPIKeyEnv
+	}
+	if o.DocsMaxOutputBytes <= 0 {
+		o.DocsMaxOutputBytes = defaultDocsMaxOutputBytes
+	}
 	return o
 }
+
+func (o Options) docsAPIKey() string { return os.Getenv(o.DocsAPIKeyEnv) }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {
 	schema := map[string]any{"type": "object", "properties": properties}

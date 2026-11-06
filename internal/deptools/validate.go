@@ -35,6 +35,11 @@ var (
 	mavenCoord = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*:[A-Za-z0-9_-][A-Za-z0-9._-]*$`)
 	tfSegment  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	dockerRepo = regexp.MustCompile(`^([a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`)
+
+	// A docs library is a Context7 id: /org/project.
+	docsLibrary = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	// A docs topic is a short phrase of identifier characters: never free text or code.
+	docsTopic = regexp.MustCompile(`^[A-Za-z0-9._/ -]{1,80}$`)
 )
 
 // validEcosystem reports whether eco is one pinned_version can read.

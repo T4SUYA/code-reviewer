@@ -35,6 +35,8 @@ var defaultRegistryURLs = map[string]string{
 // to the host configured for that ecosystem.
 type registryLookup struct {
 	opts Options
+	// authorization, when set, is sent as the Authorization header (docs_lookup only).
+	authorization string
 }
 
 // lookupResult is what a registry told us about a package and version.
@@ -216,6 +218,9 @@ func (rl registryLookup) do(ctx context.Context, base *url.URL, method, path str
 		req.Header.Set("Accept", accept)
 	}
 	req.Header.Set("User-Agent", "code-reviewer-agent-tools")
+	if rl.authorization != "" {
+		req.Header.Set("Authorization", rl.authorization)
+	}
 	client := rl.opts.HTTPClient
 	if client == nil {
 		client = &http.Client{}
