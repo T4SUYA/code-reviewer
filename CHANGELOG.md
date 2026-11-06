@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `learnings` configuration field, `--learnings` CLI flag, `REVIEW_LEARNINGS` environment variable and `learnings` action input. They point at a YAML or JSON file of previously dismissed findings (`title`, `reason`, and optionally `rule`, `path_glob` and `kind: false_positive | declined`). The entries that apply to the changed files are added to the system prompt as a section that asks the model not to raise them again unless the code now differs materially. The section is capped at 20 entries and 4,000 characters, dropping the oldest first in a deterministic order; entry text is flattened and quoted as data. The file is validated at startup (256 KiB, 500 entries at most) and a schema error is a configuration error. The rendered section is part of the review cache key, so a changed applicable entry re-reviews cached diffs. Without the setting the prompt and cache keys are unchanged.
+
 ## [0.28.0] — 2026-11-02
 
 ### Added

@@ -382,6 +382,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--update-description` | Inject review summary into MR/PR description | `false` |
 | `--cleanup-mode` | How to handle previous reviews: `delete` or `resolve` | `delete` |
 | `--dismissal-mode` | What dismisses a HIGH/CRITICAL finding's thread: `any` (a reply or a resolution) or `resolve_only` (a resolution only). See [Dismissed Findings](#dismissed-findings). | `any` |
+| `--learnings` | Path to a YAML/JSON file of previously dismissed findings that the model is told not to raise again. See [Learnings from Past Dismissals](#learnings-from-past-dismissals). | — |
 | `--profile` | Review profile: `platform`, `product`, or `all` (default: `all`). See [Dual-Review Architecture](docs/PLATFORM-GOVERNANCE.md#dual-review-ci-architecture-platform-gate-vs-product-quality-review). |
 | `--platform-model` | Model override for `--profile=platform` (e.g. `gemini-3.1-pro-preview`) | — |
 | `--product-model` | Model override for `--profile=product` (e.g. `gemini-3.8-flash`) | — |
@@ -482,6 +483,7 @@ api_url: http://localhost:11434/v1  # Optional: use a self-hosted model
 update_description: false  # Inject summary into MR/PR description
 cleanup_mode: delete       # delete or resolve
 dismissal_mode: any        # any or resolve_only (what dismisses a HIGH/CRITICAL finding)
+learnings: .review/learnings.yaml  # Optional: past dismissals given to the model as context
 auto_approve: false     # Auto-approve MR/PR when zero findings (CI mode)
 auto_fix_remote: false  # Apply inline suggestions via platform API (CI mode, discussions)
 audit_log: review.jsonl # Write audit trail
@@ -552,6 +554,26 @@ Rules for who may dismiss:
 - Dismissed HIGH and CRITICAL findings are never re-posted, but they still count toward the exit status whenever the model emits them again. Because dismissed locations are also listed in the prompt, the model will often not emit them, so do not rely on this to keep the CI gate red. Auto-approve and SARIF/SAST output include every finding the model emitted.
 - `dismissal_mode: resolve_only` (`--dismissal-mode`, `REVIEW_DISMISSAL_MODE`) makes a plain reply stop dismissing HIGH and CRITICAL findings: only a resolution by someone other than the author does. A reply-only thread is then left out of the dismissed locations in the prompt, so the model can raise the finding again and it is re-posted. Lower severities are unchanged. GitHub cannot read thread resolution, so there `resolve_only` never dismisses a HIGH or CRITICAL finding. The default, `any`, keeps the behavior described above.
 - The feature is on by default in CI mode and has no opt-out setting yet.
+
+### Learnings from Past Dismissals
+
+Dismissed findings above are matched by fingerprint on one merge/pull request. To carry what a team already decided into later reviews, point `learnings` (`--learnings`, `REVIEW_LEARNINGS`, action input `learnings`) at a YAML or JSON file of past dismissals. Other review tools describe the same idea: [CodeRabbit learnings](https://docs.coderabbit.ai/knowledge-base/learnings) and [Greptile training](https://www.greptile.com/docs/code-review/training-the-learning-system) both feed reviewer feedback back into later reviews. Here the file is explicit and version-controlled, and it only adds prompt context; it does not suppress findings itself, and it does not change `dismissal_mode`.
+
+```yaml
+# .review/learnings.yaml - oldest entries first
+- title: Unchecked error from Close
+  rule: errcheck                 # optional
+  path_glob: "**/*_test.go"      # optional: only when a changed file matches
+  reason: Test helpers close temp files that the test runner removes.
+  kind: false_positive           # optional: false_positive or declined
+- title: Function is longer than 80 lines
+  reason: Generated table-driven setup; splitting it hurts readability.
+  kind: declined
+```
+
+`title` and `reason` are required. A top-level list or a mapping with an `entries` list both work, as does JSON. A malformed file stops the run with a configuration error that names the entry.
+
+When any entry applies to the changed files, the system prompt gains a section titled "Previously dismissed findings in this repository" that asks the model not to raise them again unless the code now differs materially. The section is bounded: at most 20 entries and 4,000 characters of entry text; when either limit is reached the oldest entries (earliest in the file) are dropped, and the same input always renders the same section. Entry text is collapsed to one quoted line, capped per field, and introduced as recorded history, not instructions. A file is limited to 256 KiB and 500 entries. The rendered section is part of the review cache key, so changing an applicable entry re-reviews cached diffs, while a run without `learnings` builds exactly the prompt and cache keys it did before.
 
 #### Suppressed findings in the audit log
 

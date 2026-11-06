@@ -51,6 +51,10 @@ inputs:
     description: "What dismisses a HIGH/CRITICAL finding thread (any or resolve_only)"
     required: false
     default: ""
+  learnings:
+    description: "Path to a YAML/JSON file of previously dismissed findings the model is told not to raise again"
+    required: false
+    default: ""
   use-temperature:
     description: "Whether to send sampling temperature on model calls (true or false)"
     required: false
@@ -193,6 +197,7 @@ runs:
         INPUT_COMMENT_MODE: ${{ inputs.comment-mode }}
         INPUT_CLEANUP_MODE: ${{ inputs.cleanup-mode }}
         INPUT_DISMISSAL_MODE: ${{ inputs.dismissal-mode }}
+        INPUT_LEARNINGS: ${{ inputs.learnings }}
         INPUT_USE_TEMPERATURE: ${{ inputs.use-temperature }}
         INPUT_THINKING_LEVEL: ${{ inputs.thinking-level }}
         INPUT_AGENT: ${{ inputs.agent }}
@@ -232,6 +237,7 @@ runs:
         [ -n "${INPUT_COMMENT_MODE}" ] && ARGS+=(--comment-mode "${INPUT_COMMENT_MODE}")
         [ -n "${INPUT_CLEANUP_MODE}" ] && ARGS+=(--cleanup-mode "${INPUT_CLEANUP_MODE}")
         [ -n "${INPUT_DISMISSAL_MODE}" ] && ARGS+=(--dismissal-mode "${INPUT_DISMISSAL_MODE}")
+        [ -n "${INPUT_LEARNINGS}" ] && ARGS+=(--learnings "${INPUT_LEARNINGS}")
         [ -n "${INPUT_USE_TEMPERATURE}" ] && ARGS+=("--use-temperature=${INPUT_USE_TEMPERATURE}")
         [ -n "${INPUT_THINKING_LEVEL}" ] && ARGS+=(--thinking-level "${INPUT_THINKING_LEVEL}")
         [ "${INPUT_AGENT}" = "true" ] && ARGS+=(--agent)
