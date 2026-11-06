@@ -350,6 +350,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `temperature` | `--temperature` | `REVIEW_TEMPERATURE` | — | Sampling temperature (0-2); unset keeps the built-in 0.2 |
 | `thinking_level` | `--thinking-level` | `REVIEW_THINKING_LEVEL` | — | `minimal`, `low`, `medium` or `high`; sent as the thinking config of Vertex AI generation requests (ignored with `api_url`); unset sends none |
 | `use_temperature` | `--use-temperature` | `REVIEW_USE_TEMPERATURE` | `true` | `false` sends no temperature on any model call (the model's default applies); conflicts with `temperature` |
+| — | `--operator-config` | `CODE_REVIEWER_OPERATOR_CONFIG` | — | Operator-controlled YAML file for settings `.code-reviewer.yaml` may not set (`agent_mcp_servers`). Keep it outside the checkout: in `--ci` mode a file inside it is ignored |
 | `extra_rules` | `--extra-rules` | `REVIEW_EXTRA_RULES` | — | Additional prompt rules (free text) |
 | `custom_prompt` | `--custom-prompt` | `REVIEW_CUSTOM_PROMPT` | — | Path to custom system prompt file |
 | — | `--incremental` | `INCREMENTAL` | `false` | Only review files changed in latest push (CI) |

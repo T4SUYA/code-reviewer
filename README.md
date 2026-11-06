@@ -350,6 +350,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--temperature` | Sampling temperature for review calls, 0-2 (unset = built-in 0.2) | — |
 | `--use-temperature` | Send a temperature with model calls; `--use-temperature=false` sends none so the model's own default applies (conflicts with `--temperature`) | `true` |
 | `--thinking-level` | Thinking level sent with Vertex AI model calls: `minimal`, `low`, `medium` or `high` (case-insensitive; unset = send none) | — |
+| `--operator-config` | Operator config file for settings the repository config may not set (`agent_mcp_servers`); see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) | — |
 | `--extra-rules` | Additional prompt rules | — |
 | `--custom-prompt` | Path to custom system prompt file | — |
 | `--dry-run` | Analyze without posting (with `--ci`, the merge request is still read) | `false` |
@@ -417,6 +418,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `REVIEW_TEMPERATURE` | Sampling temperature for review calls (0-2) | — |
 | `REVIEW_USE_TEMPERATURE` | Set to `false` to send no temperature on any model call | `true` |
 | `REVIEW_THINKING_LEVEL` | Thinking level for Vertex AI model calls (`minimal`, `low`, `medium`, `high`); invalid values are ignored with a warning | — |
+| `CODE_REVIEWER_OPERATOR_CONFIG` | Operator config file path (same as `--operator-config`) | — |
 | `REVIEW_CUSTOM_PROMPT` | Path to custom system prompt | — |
 | `CODE_REVIEW_PLATFORM_CONFIG` | Platform rules YAML path, comma-separated paths, or glob | — |
 | `CODE_REVIEW_PLATFORM_REVIEW_MD` | Platform guidelines markdown path or glob | — |
@@ -572,14 +574,22 @@ To choose how much a thinking model reasons before answering, set `thinking_leve
 
 ### Agent Tools and MCP Servers
 
-The `--agent` loop starts with `read_file`, `find_definition` and `list_directory`. To give it more evidence, list [Model Context Protocol](https://modelcontextprotocol.io) servers under `agent_mcp_servers` in `.code-reviewer.yaml`. Each server is started as a child process over stdio when the loop runs. The setting is YAML-only and off by default: with no `agent_mcp_servers`, the loop's prompt, response schema and behavior are unchanged.
+The `--agent` loop starts with `read_file`, `find_definition` and `list_directory`. To give it more evidence, list [Model Context Protocol](https://modelcontextprotocol.io) servers under `agent_mcp_servers`. Each server is started as a child process over stdio when the loop runs. The setting is off by default: with no `agent_mcp_servers`, the loop's prompt, response schema and behavior are unchanged.
+
+**Trust model.** A server entry names a command the reviewer runs on the CI runner. `.code-reviewer.yaml` is part of the repository under review, and in CI that is the head of the merge request, so its author could otherwise choose which processes run with the runner's credentials. For that reason `agent_mcp_servers` is never read from `.code-reviewer.yaml`: a repository config that sets it is ignored with a warning. It is read only from operator-controlled files:
+
+- the user config file, `$XDG_CONFIG_HOME/code-reviewer/config.yaml` (or `~/.config/code-reviewer/config.yaml`), and
+- the file named by `--operator-config` or `CODE_REVIEWER_OPERATOR_CONFIG`.
+
+In `--ci` mode a file named that way must live outside the checkout; one inside it is ignored with a warning, because the checkout is the change under review. Servers from both files are combined, and names must stay unique. This follows how the platform rules work: the repository can narrow a review, and only the operator can widen what the reviewer executes or trusts.
 
 ```yaml
+# operator config (not .code-reviewer.yaml)
 agent_mcp_servers:
   - name: docs                    # Tools register as "<name>.<tool>", e.g. docs.query-docs
     command: docs-mcp-server
     args: ["--stdio"]
-    env_allowlist: [DOCS_API_KEY] # Parent environment variables the server receives (PATH is always passed)
+    env_allowlist: [DOCS_API_KEY] # Parent environment variables the server receives (PATH and HOME are always passed)
     tools_allowlist: [query-docs] # Only these server tools are offered to the model and callable
     call_timeout: 30s             # Optional: per-call timeout (default 30s)
     max_output_bytes: 16384       # Optional: per-result size cap (default 16 KiB)
@@ -587,9 +597,10 @@ agent_mcp_servers:
 
 - `name` uses letters, digits, `-` and `_` and starts with a letter; names must be unique. `command` is required.
 - A server tool that is not in `tools_allowlist` is never shown to the model and is refused if called. An empty allowlist exposes nothing.
-- The server process sees only `PATH` and the variables named in `env_allowlist`; nothing else from the reviewer's environment (API keys, CI tokens) is passed on.
-- A call that exceeds `call_timeout` fails and the loop continues; output beyond `max_output_bytes` is cut and marked as truncated.
-- Output of MCP tools is untrusted. It reaches the model wrapped in `<untrusted_tool_output>` tags, and the prompt tells the model to treat it as evidence about the code and never to follow instructions inside it.
+- The server process receives `PATH`, `HOME` (package runners such as `npx` need it for their cache) and the variables named in `env_allowlist`; nothing else from the reviewer's environment (API keys, CI tokens) is passed on. When the loop ends, the server and every process it started are killed, so a launcher that spawns the real server as a grandchild leaves nothing behind (Unix; on Windows only the launched process is stopped).
+- A call that exceeds `call_timeout` fails and the loop continues; output beyond `max_output_bytes` is cut and marked as truncated. Whatever the server sets, no untrusted tool result exceeds 64 KiB in the conversation.
+- Output of MCP tools is untrusted. It reaches the model wrapped in `<untrusted_tool_output>` tags, and the prompt tells the model to treat it as evidence about the code and never to follow instructions inside it. Tool descriptions the server supplies are reduced to one line of at most 300 characters with `<`, `>` and `&` escaped before they enter the prompt.
+- A tool whose argument schema the response schema cannot express exactly (`anyOf`/`oneOf`/`allOf`, `$ref`, objects open to extra keys, properties or array items without a type) is skipped with a warning; the other tools and the loop are unaffected.
 - A server that fails to start is skipped with a warning; the loop runs with the remaining tools.
 
 Go programs that embed `pkg/agent` can register their own tools with `agent.Config.ExtraTools` (a name, a description, a JSON Schema for the arguments and an execute function); they appear in the prompt and the response schema the same way.

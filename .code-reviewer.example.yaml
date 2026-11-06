@@ -158,18 +158,10 @@ extra_rules: |
 # agent_loop: true). Verdicts are recorded in the audit log.
 # agent_scope: high_severity_only
 
-# MCP servers (stdio) whose tools the agent loop may call, registered as
-# "<name>.<tool>". Off unless listed. Only tools in tools_allowlist are exposed;
-# the server gets PATH plus the variables in env_allowlist and nothing else.
-# Tool output is passed to the model as untrusted data.
-# agent_mcp_servers:
-#   - name: docs
-#     command: docs-mcp-server
-#     args: ["--stdio"]
-#     env_allowlist: [DOCS_API_KEY]
-#     tools_allowlist: [query-docs]
-#     call_timeout: 30s        # default 30s
-#     max_output_bytes: 16384  # default 16 KiB
+# NOTE: agent_mcp_servers (MCP servers whose tools the agent loop may call) is
+# not read from this file: this file is part of the repository under review.
+# Set it in the operator config (--operator-config, CODE_REVIEWER_OPERATOR_CONFIG
+# or ~/.config/code-reviewer/config.yaml). See README.md, "Agent Tools and MCP Servers".
 
 # NOTE: The following settings are CLI/env-only and cannot be set in YAML:
 #   --models / --consensus-threshold (multi-model consensus)
