@@ -397,7 +397,6 @@ func TestDowngrade_KeepsWhatAToolResultConfirmedOrThatClaimsNothingExternal(t *t
 	for name, claim := range map[string]map[string]any{
 		"verified":     {"external_claim": true, "verified_by": []string{"t1"}},
 		"not external": {"external_claim": false, "verified_by": []string{}},
-		"flag missing": {},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res := downgradeRun(t, AgentConfig{ExtraTools: []Tool{evidenceTool("lookup", "documented", nil)}}, wire("a.go", 5, "bug", "initial", claim), read)
@@ -409,6 +408,15 @@ func TestDowngrade_KeepsWhatAToolResultConfirmedOrThatClaimsNothingExternal(t *t
 				t.Errorf("Downgraded = %d, verdicts = %+v", res.Downgraded, res.Verdicts)
 			}
 		})
+	}
+}
+
+// A finding that never says whether it asserts an outside fact cannot be told
+// apart from one that does, so it is treated as an unconfirmed claim.
+func TestDowngrade_FindingWithoutAClaimIsTreatedAsUnconfirmed(t *testing.T) {
+	res := downgradeRun(t, AgentConfig{}, wire("a.go", 5, "bug", "initial", nil))
+	if f := res.Findings[0]; f.Severity != "LOW" || !strings.Contains(f.Body, "not verified") {
+		t.Errorf("finding = %+v, want LOW with the note", f)
 	}
 }
 
@@ -471,12 +479,178 @@ func TestDowngrade_AppliesToAddedFindingsToo(t *testing.T) {
 	}
 }
 
-func TestDowngrade_DoneActionIsNotOfferedInTheSchema(t *testing.T) {
+func TestDowngrade_SchemaOffersDoneAndClaimsExceptOnTheFinalTurn(t *testing.T) {
 	reg := NewToolRegistry(t.TempDir())
-	for _, b := range agentResponseSchema(reg, true, agentPolicy{downgrade: true}).AnyOf {
-		if b.Properties["action"].Enum[0] == "done" {
-			t.Error("the done action must not be offered when every answer needs per-finding claim fields")
+	actions := func(withTools bool) map[string]bool {
+		got := map[string]bool{}
+		for _, b := range agentResponseSchema(reg, withTools, agentPolicy{downgrade: true}).AnyOf {
+			got[b.Properties["action"].Enum[0]] = true
 		}
+		return got
+	}
+	if a := actions(true); !a["done"] || !a["claims"] || !a["findings"] || !a["tool"] {
+		t.Errorf("tool turns offer %v, want tool, findings, claims and done", a)
+	}
+	if a := actions(false); !a["done"] || !a["findings"] || a["claims"] || a["tool"] {
+		t.Errorf("final turn offers %v, want findings and done only", a)
+	}
+	for _, b := range agentResponseSchema(reg, true, agentPolicy{}).AnyOf {
+		if b.Properties["action"].Enum[0] == "claims" {
+			t.Error("claims action offered without unverifiable_claims: downgrade")
+		}
+	}
+	// The claim fields on a finding are optional: claims can report them instead.
+	for _, b := range agentResponseSchema(reg, true, agentPolicy{downgrade: true}).AnyOf {
+		if b.Properties["action"].Enum[0] != "findings" {
+			continue
+		}
+		item := b.Properties["findings"].Items
+		if _, ok := item.Properties["external_claim"]; !ok {
+			t.Error("findings can no longer carry external_claim")
+		}
+		for _, r := range item.Required {
+			if r == "external_claim" || r == "verified_by" {
+				t.Errorf("%s is required on every finding; the claims action exists so they need not be echoed", r)
+			}
+		}
+	}
+}
+
+func claimsReply(t *testing.T, entries ...map[string]any) string {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{"action": "claims", "claims": entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func claim(index int, external bool, verifiedBy ...string) map[string]any {
+	if verifiedBy == nil {
+		verifiedBy = []string{}
+	}
+	return map[string]any{"index": index, "external_claim": external, "verified_by": verifiedBy}
+}
+
+var twoInitial = []model.Finding{
+	{File: "a.go", Line: 5, Severity: "HIGH", Category: "bug", Title: "first", Body: "b"},
+	{File: "a.go", Line: 9, Severity: "HIGH", Category: "bug", Title: "second", Body: "b"},
+}
+
+func claimsRun(t *testing.T, replies ...string) *AgentResult {
+	t.Helper()
+	cfg := AgentConfig{
+		UnverifiableClaims: UnverifiableClaimsDowngrade, RepoRoot: repoWithFile(t, "a.go", 20), MaxIterations: 8,
+		ExtraTools: []Tool{evidenceTool("lookup", "documented", nil)},
+	}
+	res, err := RunAgentLoop(context.Background(), &scriptedChatter{replies: replies}, cfg, twoInitial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func severities(res *AgentResult) string {
+	var out []string
+	for _, f := range res.Findings {
+		out = append(out, f.Severity)
+	}
+	return strings.Join(out, ",")
+}
+
+func TestClaims_ThenDoneJudgesEachFindingWithoutEchoingIt(t *testing.T) {
+	res := claimsRun(t,
+		toolCallReply("lookup", map[string]any{}),
+		claimsReply(t, claim(0, true, "t1"), claim(1, true)),
+		`{"action":"done"}`,
+	)
+	if got := severities(res); got != "HIGH,LOW" {
+		t.Errorf("severities = %s, want the confirmed finding kept and the unconfirmed one lowered", got)
+	}
+	if res.StopReason != "done" || res.Downgraded != 1 || res.Verdicts[1].Status != VerdictDowngraded || res.Verdicts[0].Status != VerdictVerified {
+		t.Errorf("result = %+v", res)
+	}
+	if !strings.Contains(res.Findings[1].Body, "not verified") || strings.Contains(res.Findings[0].Body, "not verified") {
+		t.Errorf("notes on the wrong findings: %+v", res.Findings)
+	}
+}
+
+func TestClaims_NotExternalFindingsAreLeftAlone(t *testing.T) {
+	res := claimsRun(t, claimsReply(t, claim(0, false), claim(1, false)), `{"action":"done"}`)
+	if got := severities(res); got != "HIGH,HIGH" || res.Downgraded != 0 {
+		t.Errorf("severities = %s, downgraded = %d, want both kept", got, res.Downgraded)
+	}
+}
+
+// done with no claims leaves nothing to tell the findings apart by, so the
+// downgrade setting treats them all as unconfirmed.
+func TestClaims_DoneWithoutClaimsLowersEveryUnclaimedFinding(t *testing.T) {
+	res := claimsRun(t, `{"action":"done"}`)
+	if got := severities(res); got != "LOW,LOW" || res.Downgraded != 2 {
+		t.Errorf("severities = %s, downgraded = %d, want both lowered", got, res.Downgraded)
+	}
+	partial := claimsRun(t, claimsReply(t, claim(1, false)), `{"action":"done"}`)
+	if got := severities(partial); got != "LOW,HIGH" {
+		t.Errorf("only the reported finding should be spared: %s", got)
+	}
+}
+
+func TestClaims_LaterEntriesReplaceEarlierOnesAndBadIndexesAreIgnored(t *testing.T) {
+	res := claimsRun(t,
+		claimsReply(t, claim(0, false), claim(7, true), claim(-1, true)),
+		claimsReply(t, claim(0, true)),
+		claimsReply(t, claim(1, false)),
+		`{"action":"done"}`,
+	)
+	if got := severities(res); got != "LOW,HIGH" {
+		t.Errorf("severities = %s, want the second report on finding 0 to win", got)
+	}
+}
+
+func TestClaims_FindingsActionUsesRecordedClaimsAndInlineFieldsWin(t *testing.T) {
+	res := claimsRun(t,
+		claimsReply(t, claim(0, false), claim(1, false)),
+		findingsReply(t,
+			wire("a.go", 5, "bug", "first", nil), // judged by the recorded claim: not external
+			wire("a.go", 9, "bug", "second", map[string]any{"external_claim": true, "verified_by": []string{}}), // inline fields win
+		),
+	)
+	if got := severities(res); got != "HIGH,LOW" {
+		t.Errorf("severities = %s", got)
+	}
+}
+
+func TestClaims_FindingsAtOneLocationAreJudgedByTheirOwnPosition(t *testing.T) {
+	twin := []model.Finding{
+		{File: "a.go", Line: 5, Severity: "HIGH", Category: "bug", Title: "one", Body: "b"},
+		{File: "a.go", Line: 5, Severity: "HIGH", Category: "bug", Title: "two", Body: "b"},
+	}
+	cfg := AgentConfig{UnverifiableClaims: UnverifiableClaimsDowngrade, RepoRoot: repoWithFile(t, "a.go", 20), MaxIterations: 4}
+	res, err := RunAgentLoop(context.Background(), &scriptedChatter{replies: []string{
+		claimsReply(t, claim(0, false), claim(1, true)),
+		findingsReply(t, wire("a.go", 5, "bug", "one", nil), wire("a.go", 5, "bug", "two", nil)),
+	}}, cfg, twin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := severities(res); got != "HIGH,LOW" {
+		t.Errorf("severities = %s, want the claim of each position applied to the finding at that position", got)
+	}
+}
+
+func TestClaims_ActionWithoutTheDowngradePolicyStopsTheLoop(t *testing.T) {
+	cfg := AgentConfig{RepoRoot: repoWithFile(t, "a.go", 20), MaxIterations: 4}
+	res, err := RunAgentLoop(context.Background(), &scriptedChatter{replies: []string{claimsReply(t, claim(0, true))}}, cfg, twoInitial)
+	if err != nil || res.StopReason != "error" || severities(res) != "HIGH,HIGH" {
+		t.Errorf("res = %+v, err = %v", res, err)
+	}
+}
+
+func TestClaims_NothingChangesOnABudgetOrIterationStop(t *testing.T) {
+	cfg := AgentConfig{UnverifiableClaims: UnverifiableClaimsDowngrade, RepoRoot: repoWithFile(t, "a.go", 20), MaxIterations: 1}
+	res, err := RunAgentLoop(context.Background(), &scriptedChatter{replies: []string{claimsReply(t, claim(0, true))}}, cfg, twoInitial)
+	if err != nil || severities(res) != "HIGH,HIGH" || res.Downgraded != 0 {
+		t.Errorf("res = %+v, err = %v; want findings untouched when the loop never finished", res, err)
 	}
 }
 

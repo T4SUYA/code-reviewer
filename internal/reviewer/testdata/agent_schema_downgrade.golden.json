@@ -202,9 +202,7 @@
               "severity",
               "category",
               "title",
-              "body",
-              "external_claim",
-              "verified_by"
+              "body"
             ],
             "type": "OBJECT"
           },
@@ -218,6 +216,69 @@
       "required": [
         "action",
         "findings"
+      ],
+      "type": "OBJECT"
+    },
+    {
+      "properties": {
+        "action": {
+          "enum": [
+            "done"
+          ],
+          "type": "STRING"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "OBJECT"
+    },
+    {
+      "properties": {
+        "action": {
+          "enum": [
+            "claims"
+          ],
+          "type": "STRING"
+        },
+        "claims": {
+          "items": {
+            "properties": {
+              "external_claim": {
+                "type": "BOOLEAN"
+              },
+              "index": {
+                "type": "INTEGER"
+              },
+              "verified_by": {
+                "items": {
+                  "type": "STRING"
+                },
+                "type": "ARRAY"
+              }
+            },
+            "propertyOrdering": [
+              "index",
+              "external_claim",
+              "verified_by"
+            ],
+            "required": [
+              "index",
+              "external_claim",
+              "verified_by"
+            ],
+            "type": "OBJECT"
+          },
+          "type": "ARRAY"
+        }
+      },
+      "propertyOrdering": [
+        "action",
+        "claims"
+      ],
+      "required": [
+        "action",
+        "claims"
       ],
       "type": "OBJECT"
     }

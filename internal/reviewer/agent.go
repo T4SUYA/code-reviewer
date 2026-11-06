@@ -198,10 +198,11 @@ func buildVerdicts(initial, final []model.Finding, completed bool) []FindingVerd
 
 // agentAction is the parsed model response format.
 type agentAction struct {
-	Action   string          `json:"action"`             // "tool", "findings", "done"
+	Action   string          `json:"action"`             // "tool", "findings", "claims", "done"
 	Tool     string          `json:"tool,omitempty"`     // tool name (when action=tool)
 	Args     map[string]any  `json:"args,omitempty"`     // tool arguments
 	Findings json.RawMessage `json:"findings,omitempty"` // refined findings (when action=findings)
+	Claims   json.RawMessage `json:"claims,omitempty"`   // external-claim report (when action=claims)
 }
 
 // RunAgentLoop executes the agent refinement loop. It takes initial findings,
@@ -272,6 +273,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 	var totalUsage model.TokenUsage
 	consecutiveToolErrors := 0
 	var retained, downgraded, addedFindings []model.Finding
+	recorded := map[int]claimEntry{} // Claims the claims action reported, by initial position.
 	answered := false
 
 	for i := 0; i < cfg.MaxIterations; i++ {
@@ -386,7 +388,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			matched, unmatched := partitionByInitial(initialFindings, returned)
 			answered = true
 			for _, m := range matched {
-				f, lowered := policy.applyClaimPolicy(m, calls)
+				f, lowered := policy.applyClaimPolicy(m.judged(recorded), calls)
 				f.Origin = ""
 				if lowered {
 					downgraded = append(downgraded, f)
@@ -406,8 +408,40 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			result.StopReason = "done"
 			goto done
 
+		case "claims":
+			if !policy.downgrade {
+				slog.Warn("agent loop: claims action without unverifiable_claims: downgrade", "iteration", i+1)
+				result.StopReason = "error"
+				goto done
+			}
+			var entries []claimEntry
+			if err := json.Unmarshal(action.Claims, &entries); err != nil {
+				slog.Warn("agent loop: invalid claims JSON, stopping", "error", err)
+				result.StopReason = "error"
+				goto done
+			}
+			reported := recordClaims(recorded, entries, len(initialFindings))
+			history = append(history, genai.NewContentFromText(
+				fmt.Sprintf("Claims recorded for %d finding(s). Continue with tools, or finish with findings or done.", reported),
+				genai.RoleUser,
+			))
+
 		case "done":
 			result.StopReason = "done"
+			if policy.downgrade {
+				// Without a findings answer the claims action is all the loop
+				// has to judge the findings by; the unreported ones count as
+				// unconfirmed claims.
+				for idx, f := range initialFindings {
+					out, lowered := policy.applyClaimPolicy(refinedFinding{Finding: f, initialIndex: idx}.judged(recorded), calls)
+					if lowered {
+						downgraded = append(downgraded, out)
+					}
+					retained = append(retained, out)
+				}
+				result.Findings = append([]model.Finding{}, retained...)
+				answered = true
+			}
 			goto done
 
 		default:
@@ -489,6 +523,21 @@ func validateRefinedFindings(initial, refined []model.Finding) []model.Finding {
 		validated = append(validated, m.Finding)
 	}
 	return validated
+}
+
+// recordClaims stores the entries of a claims action under their initial
+// position, later entries replacing earlier ones, and returns how many entries
+// named a finding. Entries without a position in range are ignored.
+func recordClaims(recorded map[int]claimEntry, entries []claimEntry, findings int) int {
+	n := 0
+	for _, e := range entries {
+		if e.Index < 0 || e.Index >= findings {
+			continue
+		}
+		recorded[e.Index] = e
+		n++
+	}
+	return n
 }
 
 // markDowngraded relabels the verdict of each downgraded finding.

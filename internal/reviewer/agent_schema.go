@@ -13,8 +13,10 @@ import "google.golang.org/genai"
 // The tool branches come from the registry, one per registered tool.
 // Without withTools the tool branches are left out, which forces the final
 // turn to answer instead of asking for more context. With the downgrade
-// policy the "done" branch is left out too, so every answer carries the
-// per-finding external-claim fields the policy is enforced from.
+// policy a "claims" branch lets the model report, before it finishes, which
+// findings assert facts about something outside the repository; the final
+// turn leaves it out with the tools. A finding may also carry
+// external_claim and verified_by itself.
 func agentResponseSchema(tools *ToolRegistry, withTools bool, policy agentPolicy) *genai.Schema {
 	str := &genai.Schema{Type: genai.TypeString}
 	num := &genai.Schema{Type: genai.TypeInteger}
@@ -32,14 +34,42 @@ func agentResponseSchema(tools *ToolRegistry, withTools bool, policy agentPolicy
 		Required:         []string{"action", "findings"},
 		PropertyOrdering: []string{"action", "findings"},
 	})
-	if !policy.downgrade {
-		branches = append(branches, &genai.Schema{
-			Type:       genai.TypeObject,
-			Properties: map[string]*genai.Schema{"action": {Type: genai.TypeString, Enum: []string{"done"}}},
-			Required:   []string{"action"},
-		})
+	branches = append(branches, &genai.Schema{
+		Type:       genai.TypeObject,
+		Properties: map[string]*genai.Schema{"action": {Type: genai.TypeString, Enum: []string{"done"}}},
+		Required:   []string{"action"},
+	})
+	if policy.downgrade && withTools {
+		branches = append(branches, claimsSchema(str, num))
 	}
 	return &genai.Schema{AnyOf: branches}
+}
+
+// claimsSchema is the claims action of the downgrade policy: for each
+// finding, by position, whether it asserts a fact about something outside the
+// repository and which tool calls confirm it.
+func claimsSchema(str, num *genai.Schema) *genai.Schema {
+	return &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"action": {Type: genai.TypeString, Enum: []string{"claims"}},
+			"claims": {
+				Type: genai.TypeArray,
+				Items: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"index":          num,
+						"external_claim": {Type: genai.TypeBoolean},
+						"verified_by":    {Type: genai.TypeArray, Items: str},
+					},
+					Required:         []string{"index", "external_claim", "verified_by"},
+					PropertyOrdering: []string{"index", "external_claim", "verified_by"},
+				},
+			},
+		},
+		Required:         []string{"action", "claims"},
+		PropertyOrdering: []string{"action", "claims"},
+	}
 }
 
 // findingSchema mirrors model.Finding's JSON fields. A refined finding replaces
@@ -62,7 +92,6 @@ func findingSchema(str, num *genai.Schema, policy agentPolicy) *genai.Schema {
 	if policy.downgrade {
 		schema.Properties["external_claim"] = &genai.Schema{Type: genai.TypeBoolean}
 		schema.Properties["verified_by"] = &genai.Schema{Type: genai.TypeArray, Items: str}
-		schema.Required = append(schema.Required, "external_claim", "verified_by")
 	}
 	if policy.explore {
 		schema.Properties["evidence"] = &genai.Schema{

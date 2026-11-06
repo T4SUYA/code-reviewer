@@ -94,6 +94,29 @@ type refinedFinding struct {
 	VerifiedBy []string `json:"verified_by,omitempty"`
 	// Evidence lists what an added finding is based on.
 	Evidence []evidenceRef `json:"evidence,omitempty"`
+	// initialIndex is the position of the initial finding this one refines,
+	// or -1 when it matches none.
+	initialIndex int
+}
+
+// claimEntry is what the claims action says about one initial finding.
+type claimEntry struct {
+	Index         int      `json:"index"`
+	ExternalClaim *bool    `json:"external_claim"`
+	VerifiedBy    []string `json:"verified_by"`
+}
+
+// judged returns the finding with the claim it is judged by: the fields the
+// finding itself carries when it says whether its claim is external, else the
+// entry the claims action recorded for its position, else none.
+func (r refinedFinding) judged(recorded map[int]claimEntry) refinedFinding {
+	if r.ExternalClaim != nil {
+		return r
+	}
+	if e, ok := recorded[r.initialIndex]; ok && r.initialIndex >= 0 {
+		r.ExternalClaim, r.VerifiedBy = e.ExternalClaim, e.VerifiedBy
+	}
+	return r
 }
 
 // lineSpan is a range of file lines, both ends included. An empty span has end < start.
@@ -213,33 +236,40 @@ type locationKey struct {
 // location stay balanced) and the rest. A returned finding on a new-side line
 // ignores its old_line.
 func partitionByInitial(initial []model.Finding, returned []refinedFinding) (matched, unmatched []refinedFinding) {
-	counts := make(map[locationKey]int, len(initial))
-	for _, f := range initial {
-		counts[locationKey{f.File, f.Line, f.OldLine}]++
+	positions := make(map[locationKey][]int, len(initial))
+	for i, f := range initial {
+		k := locationKey{f.File, f.Line, f.OldLine}
+		positions[k] = append(positions[k], i)
 	}
 	for _, r := range returned {
 		if r.Line > 0 {
 			r.OldLine = 0
 		}
 		k := locationKey{r.File, r.Line, r.OldLine}
-		if counts[k] > 0 {
-			counts[k]--
+		if idx := positions[k]; len(idx) > 0 {
+			r.initialIndex = idx[0]
+			positions[k] = idx[1:]
 			matched = append(matched, r)
 		} else {
+			r.initialIndex = -1
 			unmatched = append(unmatched, r)
 		}
 	}
 	return matched, unmatched
 }
 
-// applyClaimPolicy enforces unverifiable_claims on one returned finding from
-// its structured fields. A finding that declares an external claim and cites
-// no successful tool call is lowered to the lowest reported severity and gets
-// the note; one whose severity a rule fixes keeps it and gets the note only.
-// It reports whether the finding was lowered.
+// applyClaimPolicy enforces unverifiable_claims on one finding from its
+// structured claim (see judged). A finding that does not say it is free of
+// external claims, and cites no conclusive dependency or MCP call, is treated
+// as an unconfirmed external claim: it is lowered to the lowest reported
+// severity and gets the note, and one whose severity a rule fixes keeps it and
+// gets the note only. Treating an unclassified finding this way is
+// deliberately conservative: when the loop finishes without saying which
+// findings assert outside facts, none of them can be told apart from one that
+// does. It reports whether the finding was lowered.
 func (p agentPolicy) applyClaimPolicy(r refinedFinding, calls *toolCallLog) (model.Finding, bool) {
 	f := r.Finding
-	if !p.downgrade || r.ExternalClaim == nil || !*r.ExternalClaim || calls.anyConfirms(r.VerifiedBy) {
+	if !p.downgrade || (r.ExternalClaim != nil && !*r.ExternalClaim) || calls.anyConfirms(r.VerifiedBy) {
 		return f, false
 	}
 	if !strings.Contains(f.Body, unverifiedClaimNote) {
@@ -341,10 +371,13 @@ func (p agentPolicy) refinementRules() string {
 	sb.WriteString("- If you cannot verify a finding, keep it as-is.\n")
 	sb.WriteString("- Use tools to read relevant source files and verify findings.\n")
 	if p.downgrade {
-		sb.WriteString("- Set \"external_claim\" to true on every finding that asserts a fact about something outside this repository: " +
+		sb.WriteString("- Before you finish, report with the claims action which findings assert a fact about something outside this repository: " +
 			"a library, framework or provider API, option, version, runtime, URL format or language syntax. " +
-			"For those, list in \"verified_by\" the ids of the tool calls whose results confirm the fact, and leave it empty when no tool result does. " +
-			"A finding with an external claim that no tool result confirms is downgraded automatically.\n")
+			"Findings are numbered from 0 in the order of <initial_findings>. " +
+			"For each, give \"index\", \"external_claim\" (true or false) and \"verified_by\": the ids of the dependency or MCP tool calls whose conclusive results confirm the fact, empty when none does. " +
+			"A call that found nothing (\"not installed\", \"no pin found\", \"package exists: no\", \"no documentation found\") confirms nothing, " +
+			"and reading repository files does not confirm a fact about a dependency. " +
+			"A finding you do not report on, or whose external claim no tool result confirms, is downgraded automatically.\n")
 	}
 	if p.tracksToolCalls() {
 		sb.WriteString("- Every tool result carries an \"id\" you can cite.\n")
@@ -365,10 +398,10 @@ func (p agentPolicy) responseFormat() string {
 		sb.WriteString("- To return refined findings: {\"action\": \"findings\", \"findings\": [<findings>]}\n")
 	}
 	if p.downgrade {
-		sb.WriteString("- Finish with the findings action so every finding carries its external_claim and verified_by.\n\n")
-	} else {
-		sb.WriteString("- To finish without changes: {\"action\": \"done\"}\n\n")
+		sb.WriteString("- To report which findings assert outside facts, once you have your evidence: " +
+			"{\"action\": \"claims\", \"claims\": [{\"index\": 0, \"external_claim\": true, \"verified_by\": [\"t1\"]}]}\n")
 	}
+	sb.WriteString("- To finish without changes: {\"action\": \"done\"}\n\n")
 	return sb.String()
 }
 
