@@ -226,6 +226,7 @@ type Config struct {
 	AgentScope         string           // Findings the agent loop examines: "all" (default) or "high_severity_only".
 	AgentMode          string           // "refine" (default: the loop may only drop or modify findings) or "explore" (it may also add findings it establishes with tool evidence).
 	AgentMaxAdded      int              // Findings the loop may add per run in explore mode (default 5).
+	AddedMaxSeverity   string           // Highest severity an explore-added finding keeps: "medium" (default), "low", "high" or "critical"; higher ones are lowered to it.
 	UnverifiableClaims string           // "keep" (default) or "downgrade" findings whose claim about something outside the repository the loop could not confirm with a tool result.
 
 	// Scope enforcement.
@@ -317,6 +318,7 @@ type repoConfig struct {
 	AgentMode                string   `yaml:"agent_mode"`
 	AgentMaxAdded            *int     `yaml:"agent_max_added_findings"`
 	UnverifiableClaims       string   `yaml:"unverifiable_claims"`
+	AgentAddedMaxSeverity    string   `yaml:"agent_added_max_severity"`
 
 	IntentChecks *model.IntentChecks `yaml:"intent_checks"`
 }
@@ -685,6 +687,9 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.AgentMaxAdded != nil {
 		c.AgentMaxAdded = *rc.AgentMaxAdded
 	}
+	if rc.AgentAddedMaxSeverity != "" {
+		c.AddedMaxSeverity = rc.AgentAddedMaxSeverity
+	}
 	if rc.UnverifiableClaims != "" {
 		c.UnverifiableClaims = rc.UnverifiableClaims
 	}
@@ -989,6 +994,7 @@ func (c *Config) loadFlags() error {
 	agentScope := fs.String("agent-scope", "", "Findings the agent loop examines: all (default) or high_severity_only")
 	agentMode := fs.String("agent-mode", "", "Agent loop mode: refine (default, may only drop or modify findings) or explore (may also add findings backed by tool evidence)")
 	agentMaxAdded := fs.Int("agent-max-added", 5, "Findings the agent loop may add per run in explore mode")
+	agentAddedMaxSeverity := fs.String("agent-added-max-severity", "", "Highest severity a finding the agent loop adds in explore mode keeps: low, medium (default), high or critical")
 	unverifiableClaims := fs.String("unverifiable-claims", "", "Findings asserting an unconfirmed fact about something outside the repository: keep (default) or downgrade")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -1211,6 +1217,8 @@ func (c *Config) loadFlags() error {
 			c.AgentMode = *agentMode
 		case "agent-max-added":
 			c.AgentMaxAdded = *agentMaxAdded
+		case "agent-added-max-severity":
+			c.AddedMaxSeverity = *agentAddedMaxSeverity
 		case "unverifiable-claims":
 			c.UnverifiableClaims = *unverifiableClaims
 		}
@@ -1394,6 +1402,18 @@ func (c *Config) validate() error {
 		// Valid.
 	default:
 		return &ConfigError{Err: fmt.Errorf("invalid agent mode %q: must be refine or explore", c.AgentMode)}
+	}
+	if c.AddedMaxSeverity == "" {
+		c.AddedMaxSeverity = "MEDIUM"
+	}
+	addedCap, err := ParseSeverity(c.AddedMaxSeverity)
+	if err != nil {
+		return &ConfigError{Err: fmt.Errorf("invalid agent added max severity: %w", err)}
+	}
+	c.AddedMaxSeverity = strings.ToUpper(strings.TrimSpace(c.AddedMaxSeverity))
+	if c.AgentMode == "explore" && addedCap < c.MinSeverity {
+		slog.Warn("agent_added_max_severity is below min_severity: findings the loop adds are capped under the reporting floor and will not be reported",
+			"agent_added_max_severity", c.AddedMaxSeverity, "min_severity", c.MinSeverity)
 	}
 	if c.UnverifiableClaims == "" {
 		c.UnverifiableClaims = "keep"

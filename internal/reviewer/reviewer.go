@@ -90,6 +90,7 @@ func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
 
 		Mode:               r.cfg.AgentMode,
 		MaxAddedFindings:   r.cfg.AgentMaxAdded,
+		AddedMaxSeverity:   r.cfg.AddedMaxSeverity,
 		UnverifiableClaims: r.cfg.UnverifiableClaims,
 		SeverityLocked:     r.severityLocked,
 	}

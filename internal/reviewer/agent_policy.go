@@ -30,6 +30,10 @@ const (
 // AgentConfig.MaxAddedFindings is unset.
 const DefaultMaxAddedFindings = 5
 
+// DefaultAddedMaxSeverity is the highest severity a finding added in explore
+// mode keeps when AgentConfig.AddedMaxSeverity is unset.
+const DefaultAddedMaxSeverity = "MEDIUM"
+
 // Outcomes of the loop beyond verified and dismissed.
 const (
 	// VerdictAdded marks a finding the loop added in explore mode.
@@ -45,15 +49,17 @@ const (
 	downgradedSeverity = "LOW"
 	// unverifiedClaimNote is appended to the body of a finding whose external
 	// claim no tool result confirmed.
-	unverifiedClaimNote = "Note: not verified against the pinned version."
+	unverifiedClaimNote = "Note: not verified with a tool."
 )
 
 // agentPolicy is the opt-in behavior of one agent loop run. The zero value is
 // the refine-only loop with unconfirmed claims kept.
 type agentPolicy struct {
-	explore   bool
-	maxAdded  int
-	downgrade bool
+	explore  bool
+	maxAdded int
+	// addedMaxSeverity is the highest severity an added finding keeps.
+	addedMaxSeverity string
+	downgrade        bool
 	// locked reports whether a finding's severity is fixed by a configured
 	// rule, so a downgrade must not change it.
 	locked func(model.Finding) bool
@@ -61,13 +67,17 @@ type agentPolicy struct {
 
 func (c AgentConfig) policy() agentPolicy {
 	p := agentPolicy{
-		explore:   c.Mode == AgentModeExplore,
-		maxAdded:  c.MaxAddedFindings,
-		downgrade: c.UnverifiableClaims == UnverifiableClaimsDowngrade,
-		locked:    c.SeverityLocked,
+		explore:          c.Mode == AgentModeExplore,
+		maxAdded:         c.MaxAddedFindings,
+		addedMaxSeverity: strings.ToUpper(strings.TrimSpace(c.AddedMaxSeverity)),
+		downgrade:        c.UnverifiableClaims == UnverifiableClaimsDowngrade,
+		locked:           c.SeverityLocked,
 	}
 	if p.maxAdded <= 0 {
 		p.maxAdded = DefaultMaxAddedFindings
+	}
+	if severityRank(p.addedMaxSeverity) == 0 {
+		p.addedMaxSeverity = DefaultAddedMaxSeverity
 	}
 	return p
 }
@@ -309,7 +319,7 @@ func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates [
 			slog.Debug("agent loop: dropping added finding that duplicates another", "file", f.File, "line", f.Line)
 			continue
 		}
-		c.Finding = f
+		c.Finding = p.capAddedSeverity(f)
 		out, lowered := p.applyClaimPolicy(c, calls)
 		if lowered {
 			downgraded++
@@ -320,6 +330,16 @@ func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates [
 		known = append(known, out)
 	}
 	return added, downgraded
+}
+
+// capAddedSeverity lowers an added finding to the highest severity added
+// findings may keep. A finding whose severity a configured rule fixes keeps it.
+func (p agentPolicy) capAddedSeverity(f model.Finding) model.Finding {
+	if severityRank(f.Severity) <= severityRank(p.addedMaxSeverity) || (p.locked != nil && p.locked(f)) {
+		return f
+	}
+	f.Severity = p.addedMaxSeverity
+	return f
 }
 
 // citedEvidence checks that every cited range lies within the lines a

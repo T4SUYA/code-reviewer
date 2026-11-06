@@ -74,6 +74,7 @@ type AgentConfig struct {
 	DependencyToolOptions deptools.Options // Options of the dependency tools; RepoRoot is filled from this config.
 
 	Mode               string                   // AgentModeRefine (default) or AgentModeExplore: the loop may also add findings backed by tool evidence.
+	AddedMaxSeverity   string                   // Highest severity an added finding keeps (default DefaultAddedMaxSeverity); higher ones are lowered to it.
 	MaxAddedFindings   int                      // Findings an explore run may add (default DefaultMaxAddedFindings).
 	UnverifiableClaims string                   // UnverifiableClaimsKeep (default) or UnverifiableClaimsDowngrade.
 	SeverityLocked     func(model.Finding) bool // Reports findings whose severity a rule fixes; a downgrade leaves their severity alone.

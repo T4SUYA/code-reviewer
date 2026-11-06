@@ -382,7 +382,7 @@ func TestDowngrade_UnconfirmedExternalClaimIsLoweredWithANote(t *testing.T) {
 			}
 			res := downgradeRun(t, AgentConfig{}, wire("a.go", 5, "bug", "initial", claim), calls...)
 			f := res.Findings[0]
-			if f.Severity != "LOW" || !strings.Contains(f.Body, "not verified against the pinned version") {
+			if f.Severity != "LOW" || !strings.Contains(f.Body, "not verified with a tool") {
 				t.Errorf("finding = %+v, want LOW with the note", f)
 			}
 			if res.Downgraded != 1 || res.Verdicts[0].Status != VerdictDowngraded {
@@ -448,7 +448,7 @@ func TestDowngrade_SeverityLockedFindingKeepsSeverityAndGetsTheNote(t *testing.T
 	claim := map[string]any{"external_claim": true, "verified_by": []string{}, "rule_name": "no-eval"}
 	res := downgradeRun(t, cfg, wire("a.go", 5, "bug", "initial", claim))
 	f := res.Findings[0]
-	if f.Severity != "HIGH" || !strings.Contains(f.Body, "not verified against the pinned version") {
+	if f.Severity != "HIGH" || !strings.Contains(f.Body, "not verified with a tool") {
 		t.Errorf("finding = %+v, want severity kept and the note added", f)
 	}
 	if res.Downgraded != 0 {
@@ -471,7 +471,7 @@ func TestDowngrade_AppliesToAddedFindingsToo(t *testing.T) {
 		t.Fatal(err)
 	}
 	added := res.Findings[1]
-	if added.Severity != "LOW" || !strings.Contains(added.Body, "not verified against the pinned version") {
+	if added.Severity != "LOW" || !strings.Contains(added.Body, "not verified with a tool") {
 		t.Errorf("added finding = %+v, want it lowered with the note", added)
 	}
 	if res.Downgraded != 1 {
@@ -799,5 +799,44 @@ func TestReadFileSpan(t *testing.T) {
 		if got := readFileSpan(c.args, c.output); got != c.want {
 			t.Errorf("%s: readFileSpan = %+v, want %+v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestExplore_AddedFindingsAreCappedInSeverity(t *testing.T) {
+	cases := []struct {
+		name     string
+		cap      string
+		severity string
+		locked   func(model.Finding) bool
+		want     string
+	}{
+		{"default cap lowers HIGH", "", "HIGH", nil, "MEDIUM"},
+		{"default cap lowers CRITICAL", "", "CRITICAL", nil, "MEDIUM"},
+		{"default cap keeps MEDIUM", "", "MEDIUM", nil, "MEDIUM"},
+		{"default cap keeps LOW", "", "LOW", nil, "LOW"},
+		{"configured cap high", "HIGH", "CRITICAL", nil, "HIGH"},
+		{"configured cap low", "low", "HIGH", nil, "LOW"},
+		{"unknown cap falls back to the default", "urgent", "HIGH", nil, "MEDIUM"},
+		{"a rule that fixes the severity keeps it", "", "HIGH", func(model.Finding) bool { return true }, "HIGH"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := runExplore(t, AgentConfig{AddedMaxSeverity: c.cap, SeverityLocked: c.locked},
+				toolCallReply("read_file", map[string]any{"path": "a.go"}),
+				findingsReply(t,
+					wire("a.go", 5, "bug", "initial", nil),
+					wire("a.go", 20, "security", "added", map[string]any{"severity": c.severity, "evidence": evidence("t1", "a.go", 15, 25)}),
+				),
+			)
+			if len(res.Findings) != 2 {
+				t.Fatalf("findings = %+v", res.Findings)
+			}
+			if got := res.Findings[1].Severity; got != c.want {
+				t.Errorf("added severity = %s, want %s", got, c.want)
+			}
+			if got := res.Findings[0].Severity; got != "HIGH" {
+				t.Errorf("the initial finding's severity changed to %s", got)
+			}
+		})
 	}
 }

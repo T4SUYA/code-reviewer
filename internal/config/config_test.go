@@ -2240,3 +2240,35 @@ func TestLoad_AgentToolsRejectsInvalidEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_AgentAddedMaxSeverity(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{name: "default", want: "MEDIUM"},
+		{name: "yaml", yaml: "agent_added_max_severity: high\n", want: "HIGH"},
+		{name: "flag overrides yaml", yaml: "agent_added_max_severity: high\n", args: []string{"--agent-added-max-severity", "low"}, want: "LOW"},
+		{name: "invalid", yaml: "agent_added_max_severity: urgent\n", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := loadWithAgentScope(t, tt.yaml, tt.args...)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Load() succeeded, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.AddedMaxSeverity != tt.want {
+				t.Errorf("AddedMaxSeverity = %q, want %q", cfg.AddedMaxSeverity, tt.want)
+			}
+		})
+	}
+}
