@@ -5,7 +5,11 @@ import (
 	"log/slog"
 
 	"github.com/OpticDiff/code-reviewer/internal/mcp"
+	"github.com/OpticDiff/code-reviewer/internal/textsafe"
 )
+
+// maxToolDescriptionRunes caps a tool description supplied by an MCP server.
+const maxToolDescriptionRunes = 300
 
 // registerMCPTools starts each configured MCP server and registers its
 // allowlisted tools as "<server>.<tool>". A server that fails to start, or a
@@ -25,7 +29,7 @@ func registerMCPTools(ctx context.Context, reg *ToolRegistry, servers []mcp.Serv
 			name := info.Name
 			err := reg.Register(Tool{
 				Name:            cfg.Name + "." + name,
-				Description:     info.Description,
+				Description:     textsafe.OneLine(info.Description, maxToolDescriptionRunes),
 				InputSchema:     schemaOrEmptyObject(info.InputSchema),
 				Timeout:         cfg.CallTimeout,
 				UntrustedOutput: true,
@@ -34,7 +38,7 @@ func registerMCPTools(ctx context.Context, reg *ToolRegistry, servers []mcp.Serv
 				},
 			})
 			if err != nil {
-				slog.Warn("agent loop: mcp tool not registered", "server", cfg.Name, "tool", name, "error", err)
+				slog.Warn("agent loop: mcp tool skipped", "server", cfg.Name, "tool", name, "error", err)
 			}
 		}
 	}

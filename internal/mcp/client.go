@@ -29,7 +29,7 @@ type ServerConfig struct {
 	Name           string        // Prefix of the registered tool names: "<Name>.<tool>".
 	Command        string        // Executable to start.
 	Args           []string      // Arguments passed to Command.
-	EnvAllowlist   []string      // Names of the parent environment variables the child receives (PATH is always passed).
+	EnvAllowlist   []string      // Names of the parent environment variables the child receives (PATH and HOME are always passed).
 	ToolsAllowlist []string      // Server tool names the agent may use; every other tool is hidden and refused.
 	CallTimeout    time.Duration // Per-call timeout (default DefaultCallTimeout).
 	MaxOutputBytes int           // Per-result size cap in bytes (default DefaultMaxOutputBytes).
@@ -45,15 +45,21 @@ type ToolInfo struct {
 // Client is a connected MCP server restricted to its allowlisted tools.
 type Client struct {
 	cfg     ServerConfig
+	cmd     *exec.Cmd
 	session *sdk.ClientSession
 	allowed map[string]bool
 	tools   []ToolInfo
 }
 
-// Env returns the child process environment: PATH plus the allowlisted
+// alwaysPassedEnv are the variables every server receives: PATH to find its
+// own tools and HOME, which package runners such as npx need for their cache
+// and configuration.
+var alwaysPassedEnv = []string{"PATH", "HOME"}
+
+// Env returns the child process environment: PATH, HOME and the allowlisted
 // variables that are set in the parent, and nothing else.
 func Env(allowlist []string, lookup func(string) (string, bool)) []string {
-	names := append([]string{"PATH"}, allowlist...)
+	names := append(append([]string{}, alwaysPassedEnv...), allowlist...)
 	seen := map[string]bool{}
 	var env []string
 	for _, name := range names {
@@ -86,6 +92,7 @@ func Connect(ctx context.Context, cfg ServerConfig) (*Client, error) {
 
 	cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:gosec // command comes from the user's own config
 	cmd.Env = Env(cfg.EnvAllowlist, os.LookupEnv)
+	startInOwnProcessGroup(cmd)
 
 	client := sdk.NewClient(&sdk.Implementation{Name: "code-reviewer"}, nil)
 	session, err := client.Connect(ctx, &sdk.CommandTransport{Command: cmd}, nil)
@@ -93,12 +100,13 @@ func Connect(ctx context.Context, cfg ServerConfig) (*Client, error) {
 		return nil, fmt.Errorf("connecting to mcp server %q: %w", cfg.Name, err)
 	}
 
-	c := &Client{cfg: cfg, session: session, allowed: map[string]bool{}}
+	c := &Client{cfg: cfg, cmd: cmd, session: session, allowed: map[string]bool{}}
 	for _, name := range cfg.ToolsAllowlist {
 		c.allowed[name] = true
 	}
 	if err := c.discover(ctx); err != nil {
 		_ = session.Close()
+		killProcessGroup(cmd)
 		return nil, err
 	}
 	return c, nil
@@ -155,8 +163,14 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (st
 	return out, nil
 }
 
-// Close ends the session and stops the server process.
-func (c *Client) Close() error { return c.session.Close() }
+// Close ends the session and stops the server process together with every
+// process it started: a launcher such as npx leaves the real server running
+// as a grandchild unless the whole process group is killed.
+func (c *Client) Close() error {
+	err := c.session.Close()
+	killProcessGroup(c.cmd)
+	return err
+}
 
 // truncate cuts s to at most max bytes on a UTF-8 boundary and marks the cut.
 func truncate(s string, max int) string {

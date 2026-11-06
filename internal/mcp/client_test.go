@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +71,14 @@ func runFakeServer() {
 				}
 			}
 			return textResult(strings.Join(names, ",")), nil, nil
+		})
+	sdk.AddTool(server, &sdk.Tool{Name: "spawn", Description: "Starts a long-lived grandchild."},
+		func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+			child := exec.Command("sleep", "300")
+			if err := child.Start(); err != nil {
+				return textResult("spawn failed: " + err.Error()), nil, nil
+			}
+			return textResult(strconv.Itoa(child.Process.Pid)), nil, nil
 		})
 	if err := server.Run(context.Background(), &sdk.StdioTransport{}); err != nil {
 		os.Exit(1)
@@ -194,8 +204,19 @@ func TestEnv(t *testing.T) {
 		v, ok := map[string]string{"PATH": "/bin", "A": "1", "B": "2"}[name]
 		return v, ok
 	}
-	got := strings.Join(Env([]string{"A", "A", "MISSING"}, lookup), " ")
+	got := strings.Join(Env([]string{"A", "A", "MISSING", "HOME"}, lookup), " ")
 	if got != "PATH=/bin A=1" {
 		t.Errorf("Env = %q", got)
+	}
+}
+
+func TestEnv_PassesHome(t *testing.T) {
+	lookup := func(name string) (string, bool) {
+		v, ok := map[string]string{"PATH": "/bin", "HOME": "/home/ci", "SECRET": "x"}[name]
+		return v, ok
+	}
+	got := strings.Join(Env(nil, lookup), " ")
+	if got != "PATH=/bin HOME=/home/ci" {
+		t.Errorf("Env = %q, want PATH and HOME only", got)
 	}
 }
