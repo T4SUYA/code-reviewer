@@ -365,7 +365,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--max-files` | Maximum files before scope enforcement (0 = unlimited) | `0` |
 | `--scope-action` | Action when scope exceeded: `warn` or `fail` | `warn` |
 | `--audit-log` | Write structured JSONL audit log to file (`files_skipped_detail` lists each unreviewed file with its reason; with `--agent`, includes `agent_verdicts` and an `agent` summary of the loop run; `suppressed` lists findings left out because their thread was [dismissed](#suppressed-findings-in-the-audit-log)) | — |
-| `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition`, `list_directory` and the tools of any configured [MCP servers](#agent-tools-and-mcp-servers) | `false` |
+| `--agent` | Enable the agent refinement loop that verifies findings with `read_file`, `find_definition`, `list_directory`, the tools of any configured [MCP servers](#agent-tools-and-mcp-servers) and the opt-in [dependency tools](#dependency-tools) | `false` |
 | `--agent-scope` | Findings the agent loop examines: `all` or `high_severity_only` (HIGH and CRITICAL only; also `agent_scope` in YAML) | `all` |
 | `--auto-approve` | Automatically approve MR/PR on clean review (CI mode only) | `false` |
 | `--auto-fix-remote` | Automatically apply inline suggestions via the platform API (CI mode, requires `--comment-mode discussions`) | `false` |
@@ -603,7 +603,24 @@ agent_mcp_servers:
 - A tool whose argument schema the response schema cannot express exactly (`anyOf`/`oneOf`/`allOf`, `$ref`, objects open to extra keys, properties or array items without a type) is skipped with a warning; the other tools and the loop are unaffected.
 - A server that fails to start is skipped with a warning; the loop runs with the remaining tools.
 
-Go programs that embed `pkg/agent` can register their own tools with `agent.Config.ExtraTools` (a name, a description, a JSON Schema for the arguments and an execute function); they appear in the prompt and the response schema the same way.
+Go programs that embed `pkg/agent` can register their own tools with `agent.Config.ExtraTools` (a name, a description, a JSON Schema for the arguments and an execute function); they appear in the prompt and the response schema the same way. `agent.Config.DependencyTools` and `DependencyToolOptions` enable the dependency tools below.
+
+#### Dependency tools
+
+A finding that says an API, option or version does not exist cannot be disproved with the three repository tools. Two built-in tools read what the checkout pins and what it has installed. List the ones you want under `agent_tools` in `.code-reviewer.yaml`; none is on by default, and with the setting absent the prompt, response schema and behavior are unchanged. Neither tool uses the network.
+
+```yaml
+agent_tools: [pinned_version, read_dependency_source]
+```
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `pinned_version` | `package`, `ecosystem?` | Reads the checkout's `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `package.json`, `go.mod`, `go.sum`, `uv.lock`, `poetry.lock`, `requirements*.txt`, `pyproject.toml`, `pom.xml`, `gradle.lockfile` and `.terraform.lock.hcl`, plus `.nvmrc`, `engines`, `.python-version` and `requires-python` for the `node` and `python` runtimes. Returns each pinned version with its file, or "No pin found". |
+| `read_dependency_source` | `package`, `path?`, `start_line?`, `end_line?` | Reads a file of an installed dependency: `node_modules/<package>` (typings included) or the Go module cache at the version `go.mod` requires. Paths stay inside the package directory (no `..`, no symlinks out). Answers "not installed" when the checkout has no copy, which says nothing about whether the API exists. |
+
+Both tools return content the repository or a dependency controls, so their output is untrusted: it reaches the model inside `<untrusted_tool_output>` tags and the prompt tells the model to treat it only as evidence. Beyond that framing, `pinned_version` prints a version only if it parses as a version or range (anything else, prose included, reads as `(unparseable)`) and prints file paths as one escaped line; `read_dependency_source` lists directory entries the same way. Both stop when the loop's context is cancelled.
+
+`read_dependency_source` needs the dependency installed in the checkout (for example `npm ci --ignore-scripts` before the review); the reviewer never installs anything itself. The Go module cache is `GOMODCACHE` or `go env GOMODCACHE`; to point at another cache set `agent_tool_options.go_mod_cache` in the operator config. Like `agent_mcp_servers`, `agent_tool_options` is never read from `.code-reviewer.yaml`: it names a location on the runner, so a repository config that sets it is ignored with a warning (see [Agent Tools and MCP Servers](#agent-tools-and-mcp-servers) for the operator config).
 
 ### Auto-Approve
 

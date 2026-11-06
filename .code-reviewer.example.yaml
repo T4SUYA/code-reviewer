@@ -163,6 +163,14 @@ extra_rules: |
 # Set it in the operator config (--operator-config, CODE_REVIEWER_OPERATOR_CONFIG
 # or ~/.config/code-reviewer/config.yaml). See README.md, "Agent Tools and MCP Servers".
 
+# Dependency tools the agent loop may call, to check claims about an API,
+# option or version against the repository's pins and installed dependencies.
+# Off unless listed. Neither tool uses the network.
+#   pinned_version         versions pinned by lockfiles and manifests
+#   read_dependency_source files of an installed dependency (node_modules, Go module cache)
+# agent_tools: [pinned_version, read_dependency_source]
+# (agent_tool_options is operator-only; see README.md.)
+
 # NOTE: The following settings are CLI/env-only and cannot be set in YAML:
 #   --models / --consensus-threshold (multi-model consensus)
 #   --api-key / REVIEW_API_KEY
