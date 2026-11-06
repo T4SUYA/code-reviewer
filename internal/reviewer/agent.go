@@ -352,7 +352,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			// Execute tool.
 			toolResult := tools.Execute(ctx, action.Tool, action.Args)
 			if policy.tracksToolCalls() {
-				toolResult.ID = calls.record(action.Tool, action.Args, toolResult.Error == "")
+				toolResult.ID = calls.record(action.Tool, action.Args, toolResult)
 			}
 			if toolResult.Error != "" {
 				consecutiveToolErrors++

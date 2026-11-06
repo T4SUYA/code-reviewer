@@ -77,7 +77,7 @@ func TestExplore_AddsAFindingCitingWhatItRead(t *testing.T) {
 		toolCallReply("read_file", map[string]any{"path": "a.go", "start_line": 10, "end_line": 30}),
 		findingsReply(t,
 			wire("a.go", 5, "bug", "initial", nil),
-			wire("a.go", 20, "security", "added", map[string]any{"evidence": evidence("t1", "a.go", 12, 18)}),
+			wire("a.go", 20, "security", "added", map[string]any{"evidence": evidence("t1", "a.go", 12, 24)}),
 		),
 	)
 	if len(res.Findings) != 2 {
@@ -90,7 +90,7 @@ func TestExplore_AddsAFindingCitingWhatItRead(t *testing.T) {
 	if added.Origin != model.OriginAgentExplore || added.Title != "added" {
 		t.Errorf("added finding = %+v, want origin %q", added, model.OriginAgentExplore)
 	}
-	if !strings.Contains(added.Body, "`a.go:12-18`") {
+	if !strings.Contains(added.Body, "`a.go:12-24`") {
 		t.Errorf("added body %q does not cite the lines read", added.Body)
 	}
 	if res.Added != 1 {
@@ -455,5 +455,82 @@ func TestNewAgentAudit_CarriesAddedAndDowngraded(t *testing.T) {
 	a := newAgentAudit(&AgentResult{StopReason: "done", Added: 2, Downgraded: 1}, nil, 3, 5)
 	if a.Added != 2 || a.Downgraded != 1 {
 		t.Errorf("audit = %+v", a)
+	}
+}
+
+// A read_file call may ask for more lines than the file holds. What it
+// returned is the span a citation must stay within.
+func TestExplore_CitationMustStayWithinTheLinesReadFileReturned(t *testing.T) {
+	cases := []struct {
+		name       string
+		read       map[string]any
+		file       string
+		line       int
+		start, end int
+		accepted   bool
+	}{
+		{"whole read inside the file", map[string]any{"path": "a.go", "start_line": 1, "end_line": 99999}, "a.go", 20, 1, 60, true},
+		{"[1,99999] cites lines the file does not have", map[string]any{"path": "a.go", "start_line": 1, "end_line": 99999}, "a.go", 20, 1, 99999, false},
+		{"end past the last line", map[string]any{"path": "a.go", "start_line": 1, "end_line": 99999}, "a.go", 20, 10, 61, false},
+		{"requested range past the file end is clipped", map[string]any{"path": "a.go", "start_line": 50, "end_line": 500}, "a.go", 55, 50, 60, true},
+		{"cite wider than the requested range", map[string]any{"path": "a.go", "start_line": 10, "end_line": 30}, "a.go", 20, 5, 30, false},
+		{"cite exactly the requested range", map[string]any{"path": "a.go", "start_line": 10, "end_line": 30}, "a.go", 20, 10, 30, true},
+		{"read without a range holds the whole file", map[string]any{"path": "a.go"}, "a.go", 60, 1, 60, true},
+		{"a finding's own line must be inside the cited range", map[string]any{"path": "a.go", "start_line": 1, "end_line": 60}, "a.go", 40, 10, 20, false},
+		{"own line on the first cited line", map[string]any{"path": "a.go", "start_line": 1, "end_line": 60}, "a.go", 10, 10, 20, true},
+		{"own line on the last cited line", map[string]any{"path": "a.go", "start_line": 1, "end_line": 60}, "a.go", 20, 10, 20, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := runExplore(t, AgentConfig{}, toolCallReply("read_file", c.read),
+				findingsReply(t,
+					wire("a.go", 5, "bug", "initial", nil),
+					wire(c.file, c.line, "security", "added", map[string]any{"evidence": evidence("t1", c.file, c.start, c.end)}),
+				),
+			)
+			if got := res.Added == 1; got != c.accepted {
+				t.Errorf("added = %d, want accepted=%v (findings %+v)", res.Added, c.accepted, res.Findings)
+			}
+		})
+	}
+}
+
+func TestExplore_OwnLineMustBeCoveredByEvidenceInTheSameFile(t *testing.T) {
+	root := repoWithFile(t, "a.go", 60)
+	if err := os.WriteFile(filepath.Join(root, "b.go"), []byte(strings.Repeat("x\n", 60)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runExplore(t, AgentConfig{RepoRoot: root},
+		toolCallReply("read_file", map[string]any{"path": "b.go"}),
+		toolCallReply("read_file", map[string]any{"path": "a.go", "start_line": 40, "end_line": 50}),
+		findingsReply(t,
+			wire("a.go", 5, "bug", "initial", nil),
+			// Line 20 of a.go is covered by b.go's span, not by a read of a.go.
+			wire("a.go", 20, "security", "added", map[string]any{"evidence": append(evidence("t1", "b.go", 10, 30), evidence("t2", "a.go", 40, 50)...)}),
+		),
+	)
+	if res.Added != 0 {
+		t.Errorf("added = %d, want 0: a finding's own line must be inside a cited range of its own file", res.Added)
+	}
+}
+
+func TestReadFileSpan(t *testing.T) {
+	cases := []struct {
+		name   string
+		args   map[string]any
+		output string
+		want   lineSpan
+	}{
+		{"whole file", map[string]any{}, "a\nb\nc\n", lineSpan{1, 3}},
+		{"no trailing newline", map[string]any{}, "a\nb\nc", lineSpan{1, 3}},
+		{"from a start line", map[string]any{"start_line": float64(10)}, "a\nb", lineSpan{10, 11}},
+		{"start below 1", map[string]any{"start_line": float64(-4)}, "a", lineSpan{1, 1}},
+		{"truncated read", map[string]any{}, "a\nb\n[... truncated at 32 KiB ...]", lineSpan{1, 2}},
+		{"empty output", map[string]any{"start_line": 7}, "", lineSpan{7, 6}},
+	}
+	for _, c := range cases {
+		if got := readFileSpan(c.args, c.output); got != c.want {
+			t.Errorf("%s: readFileSpan = %+v, want %+v", c.name, got, c.want)
+		}
 	}
 }

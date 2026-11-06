@@ -96,11 +96,18 @@ type refinedFinding struct {
 	Evidence []evidenceRef `json:"evidence,omitempty"`
 }
 
+// lineSpan is a range of file lines, both ends included. An empty span has end < start.
+type lineSpan struct{ start, end int }
+
+func (s lineSpan) contains(start, end int) bool { return start >= s.start && end <= s.end }
+
 // toolCall is one tool invocation of a loop run.
 type toolCall struct {
 	tool string
 	args map[string]any
 	ok   bool
+	// span is the lines of the file a successful read_file call returned.
+	span lineSpan
 }
 
 // toolCallLog records the tool calls of one run under ids the model can cite.
@@ -110,11 +117,40 @@ type toolCallLog struct {
 
 func newToolCallLog() *toolCallLog { return &toolCallLog{calls: map[string]toolCall{}} }
 
-// record stores a call and returns its id ("t1", "t2", ...).
-func (l *toolCallLog) record(tool string, args map[string]any, ok bool) string {
+// record stores a call and its result and returns its id ("t1", "t2", ...).
+func (l *toolCallLog) record(tool string, args map[string]any, res ToolResult) string {
 	id := fmt.Sprintf("t%d", len(l.calls)+1)
-	l.calls[id] = toolCall{tool: tool, args: args, ok: ok}
+	c := toolCall{tool: tool, args: args, ok: res.Error == ""}
+	if c.ok && tool == toolReadFile {
+		c.span = readFileSpan(args, res.Output)
+	}
+	l.calls[id] = c
 	return id
+}
+
+const (
+	toolReadFile = "read_file"
+	// readFileTruncationMarker ends the output of a read_file call cut at its size cap.
+	readFileTruncationMarker = "\n[... truncated at 32 KiB ...]"
+)
+
+// readFileSpan returns the file lines a read_file result holds. The call may
+// ask for more lines than the file has (or than the size cap lets through),
+// so the span comes from the returned text, not from the arguments.
+func readFileSpan(args map[string]any, output string) lineSpan {
+	start := 1
+	if n, ok := intArg(args["start_line"]); ok && n > 1 {
+		start = n
+	}
+	body := strings.TrimSuffix(output, readFileTruncationMarker)
+	if body == "" {
+		return lineSpan{start: start, end: start - 1}
+	}
+	lines := strings.Count(body, "\n") + 1
+	if strings.HasSuffix(body, "\n") {
+		lines-- // The final newline ends the last line; it does not open another.
+	}
+	return lineSpan{start: start, end: start + lines - 1}
 }
 
 // anySucceeded reports whether any of the ids names a tool call that returned a result.
@@ -127,11 +163,11 @@ func (l *toolCallLog) anySucceeded(ids []string) bool {
 	return false
 }
 
-// supports reports whether the evidence names a successful read_file call
-// whose line range overlaps the cited lines of the same file.
+// supports reports whether the evidence names a successful read_file call of
+// the same file whose returned lines include every cited line.
 func (l *toolCallLog) supports(ev evidenceRef) bool {
 	c, found := l.calls[strings.TrimSpace(ev.ToolCallID)]
-	if !found || !c.ok || c.tool != "read_file" {
+	if !found || !c.ok || c.tool != toolReadFile {
 		return false
 	}
 	readPath, _ := c.args["path"].(string)
@@ -141,14 +177,7 @@ func (l *toolCallLog) supports(ev evidenceRef) bool {
 	if ev.StartLine < 1 || ev.EndLine < ev.StartLine {
 		return false
 	}
-	readStart, readEnd := 1, int(^uint(0)>>1)
-	if n, ok := intArg(c.args["start_line"]); ok && n > 1 {
-		readStart = n
-	}
-	if n, ok := intArg(c.args["end_line"]); ok && n > 0 {
-		readEnd = n
-	}
-	return ev.StartLine <= readEnd && ev.EndLine >= readStart
+	return c.span.contains(ev.StartLine, ev.EndLine)
 }
 
 func intArg(v any) (int, bool) {
@@ -217,8 +246,9 @@ func (p agentPolicy) applyClaimPolicy(r refinedFinding, calls *toolCallLog) (mod
 }
 
 // acceptAdded turns the returned findings that match no initial finding into
-// added findings. Each needs a title, a body, a line, and evidence naming
-// read_file calls of this run that cover its own file; a finding that
+// added findings. Each needs a title, a body, a line in the working tree, and
+// evidence naming read_file calls of this run whose returned lines include
+// the cited range, one of which contains the finding's own line; a finding that
 // duplicates an initial, retained or earlier added finding (same file and
 // category within three lines) is dropped, and at most p.maxAdded are kept.
 func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates []refinedFinding, calls *toolCallLog) (added []model.Finding, downgraded int) {
@@ -229,7 +259,7 @@ func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates [
 			slog.Debug("agent loop: added-finding cap reached", "cap", p.maxAdded)
 			break
 		}
-		if f.File == "" || f.Title == "" || f.Body == "" || (f.Line <= 0 && f.OldLine <= 0) {
+		if f.File == "" || f.Title == "" || f.Body == "" || f.Line <= 0 {
 			slog.Debug("agent loop: dropping added finding without location or text", "title", f.Title)
 			continue
 		}
@@ -255,25 +285,26 @@ func (p agentPolicy) acceptAdded(initial, retained []model.Finding, candidates [
 	return added, downgraded
 }
 
-// citedEvidence checks that every cited range is backed by a read_file call
-// of this run and that one of them is in the finding's own file. It returns
-// the citations as text.
+// citedEvidence checks that every cited range lies within the lines a
+// read_file call of this run returned, and that a cited range in the
+// finding's own file contains the finding's own line. It returns the
+// citations as text.
 func citedEvidence(f model.Finding, evidence []evidenceRef, calls *toolCallLog) (string, bool) {
-	if len(evidence) == 0 {
+	if len(evidence) == 0 || f.Line <= 0 {
 		return "", false
 	}
-	ownFile := false
+	coversOwnLine := false
 	cites := make([]string, 0, len(evidence))
 	for _, ev := range evidence {
 		if !calls.supports(ev) {
 			return "", false
 		}
-		if cleanRepoPath(ev.File) == cleanRepoPath(f.File) {
-			ownFile = true
+		if cleanRepoPath(ev.File) == cleanRepoPath(f.File) && ev.StartLine <= f.Line && f.Line <= ev.EndLine {
+			coversOwnLine = true
 		}
 		cites = append(cites, fmt.Sprintf("`%s:%d-%d`", cleanRepoPath(ev.File), ev.StartLine, ev.EndLine))
 	}
-	return strings.Join(cites, ", "), ownFile
+	return strings.Join(cites, ", "), coversOwnLine
 }
 
 func matchesAny(f model.Finding, others []model.Finding) bool {
@@ -293,8 +324,9 @@ func (p agentPolicy) refinementRules() string {
 	sb.WriteString("## Rules\n")
 	if p.explore {
 		fmt.Fprintf(&sb, "- You may drop or modify initial findings. You may also ADD at most %d new findings, but only ones you establish with tool evidence: "+
-			"each added finding must list in \"evidence\" the tool_call_id, file, start_line and end_line of the read_file call that shows the problem, "+
-			"and one evidence item must be in the finding's own file. Do not add a finding you cannot cite, and do not repeat an initial finding.\n", p.maxAdded)
+			"each added finding must list in \"evidence\" the tool_call_id, file, start_line and end_line of the read_file call that shows the problem. "+
+			"Cite only lines that call returned, and one evidence range must contain the finding's own line. "+
+			"Do not add a finding you cannot cite, and do not repeat an initial finding.\n", p.maxAdded)
 	} else {
 		sb.WriteString("- You may ONLY drop or modify initial findings. You MUST NOT add new findings.\n")
 	}
