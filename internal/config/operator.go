@@ -18,11 +18,12 @@ const operatorConfigEnv = "CODE_REVIEWER_OPERATOR_CONFIG"
 // URLs. .code-reviewer.yaml lives in the repository under review, and in CI
 // that is the merge request head, so its author must not control them. They
 // are read only from the operator config.
-var operatorOnlyKeys = []string{"agent_mcp_servers"}
+var operatorOnlyKeys = []string{"agent_mcp_servers", "agent_tool_options"}
 
 // operatorConfig is the YAML form of the operator config file.
 type operatorConfig struct {
-	AgentMCPServers []rawAgentMCPServer `yaml:"agent_mcp_servers"`
+	AgentMCPServers  []rawAgentMCPServer  `yaml:"agent_mcp_servers"`
+	AgentToolOptions *rawAgentToolOptions `yaml:"agent_tool_options"`
 }
 
 // warnOperatorOnlyKeys logs each operator-only key found in the repository
@@ -65,11 +66,11 @@ func (c *Config) loadOperatorConfig() error {
 		path = os.Getenv(operatorConfigEnv)
 	}
 	if path == "" {
-		return validateAgentMCPServers(c.AgentMCPServers)
+		return c.validateOperatorSettings()
 	}
 	if c.CIMode && insideCheckout(path) {
 		slog.Warn("ignoring operator config inside the checkout: in CI the checkout is the change under review; keep the file outside it", "path", path)
-		return validateAgentMCPServers(c.AgentMCPServers)
+		return c.validateOperatorSettings()
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -78,7 +79,15 @@ func (c *Config) loadOperatorConfig() error {
 	if err := c.applyOperatorConfig(path, data); err != nil {
 		return err
 	}
-	return validateAgentMCPServers(c.AgentMCPServers)
+	return c.validateOperatorSettings()
+}
+
+// validateOperatorSettings checks the settings the operator config contributes.
+func (c *Config) validateOperatorSettings() error {
+	if err := validateAgentMCPServers(c.AgentMCPServers); err != nil {
+		return err
+	}
+	return validateAgentTools(c.AgentTools, c.AgentToolOptions)
 }
 
 func (c *Config) applyOperatorConfig(path string, data []byte) error {
@@ -92,6 +101,13 @@ func (c *Config) applyOperatorConfig(path string, data []byte) error {
 			return err
 		}
 		c.AgentMCPServers = append(c.AgentMCPServers, server)
+	}
+	if oc.AgentToolOptions != nil {
+		opts, err := oc.AgentToolOptions.parse()
+		if err != nil {
+			return err
+		}
+		c.AgentToolOptions = opts
 	}
 	return nil
 }

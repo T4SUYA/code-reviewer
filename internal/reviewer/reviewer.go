@@ -78,13 +78,15 @@ func NewWithDiffSource(cfg *config.Config, provider ModelReviewer, glClient vcs.
 // agentConfig builds the agent loop configuration from the review settings.
 func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
 	return AgentConfig{
-		MaxIterations:   r.cfg.AgentMaxIterations,
-		RemainingBudget: remainingBudget,
-		Timeout:         r.cfg.AgentTimeout,
-		RepoRoot:        findRepoRoot(),
-		OmitTemperature: r.cfg.DisableTemperature,
-		ThinkingLevel:   r.cfg.ThinkingLevel,
-		MCPServers:      mcpServerConfigs(r.cfg.AgentMCPServers),
+		MaxIterations:         r.cfg.AgentMaxIterations,
+		RemainingBudget:       remainingBudget,
+		Timeout:               r.cfg.AgentTimeout,
+		RepoRoot:              findRepoRoot(),
+		OmitTemperature:       r.cfg.DisableTemperature,
+		ThinkingLevel:         r.cfg.ThinkingLevel,
+		MCPServers:            mcpServerConfigs(r.cfg.AgentMCPServers),
+		DependencyTools:       r.cfg.AgentTools,
+		DependencyToolOptions: r.cfg.AgentToolOptions.DependencyToolOptions(),
 	}
 }
 

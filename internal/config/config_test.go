@@ -2102,3 +2102,44 @@ func TestLoad_AgentMCPServersRejectsInvalidEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_AgentTools(t *testing.T) {
+	cfg, err := loadWithAgentScope(t, "agent_tools: [pinned_version, read_dependency_source]\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := strings.Join(cfg.AgentTools, ","); got != "pinned_version,read_dependency_source" {
+		t.Errorf("AgentTools = %s", got)
+	}
+
+	cfg, err = loadWithAgentScope(t, "agent_scope: all\n")
+	if err != nil || len(cfg.AgentTools) != 0 {
+		t.Errorf("no agent_tools: got %v, %v; want none (off by default)", cfg.AgentTools, err)
+	}
+}
+
+func TestLoad_AgentToolsRejectsInvalidEntries(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown tool":   "agent_tools: [web_search]\n",
+		"duplicate tool": "agent_tools: [pinned_version, pinned_version]\n",
+	} {
+		if _, err := loadWithAgentScope(t, body); err == nil {
+			t.Errorf("%s: Load succeeded, want an error", name)
+		}
+	}
+}
+
+func TestLoad_AgentToolOptionsOnlyFromOperatorConfig(t *testing.T) {
+	cfg, err := loadWithOperatorConfig(t, "agent_tools: [read_dependency_source]\nagent_tool_options: {go_mod_cache: /etc}\n", "", false)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AgentToolOptions.GoModCache != "" {
+		t.Errorf("repo .code-reviewer.yaml set go_mod_cache = %q, want it ignored", cfg.AgentToolOptions.GoModCache)
+	}
+
+	cfg, err = loadWithOperatorConfig(t, "", "agent_tool_options: {go_mod_cache: /var/cache/gomod}\n", false)
+	if err != nil || cfg.AgentToolOptions.GoModCache != "/var/cache/gomod" {
+		t.Errorf("operator go_mod_cache = %q, %v", cfg.AgentToolOptions.GoModCache, err)
+	}
+}

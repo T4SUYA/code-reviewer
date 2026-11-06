@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OpticDiff/code-reviewer/internal/deptools"
 	"github.com/OpticDiff/code-reviewer/internal/mcp"
 	providermodel "github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/retry"
@@ -67,6 +68,10 @@ type AgentConfig struct {
 	ThinkingLevel   string             // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
 	ExtraTools      []Tool             // Tools registered after the built-in repository tools.
 	MCPServers      []mcp.ServerConfig // MCP servers whose allowlisted tools register as "<server>.<tool>".
+	// DependencyTools names the dependency tools to register (pinned_version,
+	// read_dependency_source). Empty registers none.
+	DependencyTools       []string
+	DependencyToolOptions deptools.Options // Options of the dependency tools; RepoRoot is filled from this config.
 }
 
 // AgentResult holds the output of the agent refinement loop.
@@ -214,6 +219,9 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 		if err := tools.Register(t); err != nil {
 			return nil, fmt.Errorf("registering agent tool: %w", err)
 		}
+	}
+	if err := registerDependencyTools(tools, cfg); err != nil {
+		return nil, err
 	}
 	if len(cfg.MCPServers) > 0 {
 		defer registerMCPTools(ctx, tools, cfg.MCPServers)()
