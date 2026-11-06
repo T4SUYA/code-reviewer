@@ -1395,11 +1395,27 @@ func (r *Reviewer) getCommitMessage(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
+// addedFindingsCap and addedSeverityCap resolve the explore-mode limits to
+// the values the loop applies, so an unset setting and its default share one
+// cache identity.
+func addedFindingsCap(n int) int {
+	if n <= 0 {
+		return DefaultMaxAddedFindings
+	}
+	return n
+}
+
+func addedSeverityCap(s string) string {
+	return AgentConfig{AddedMaxSeverity: s}.policy().addedMaxSeverity
+}
+
 // reviewCacheModelID builds the model identity that scopes review cache keys.
 // Every setting that changes what the model is asked or how it answers is part
 // of it, so a changed setting cannot replay findings produced under another.
 // Settings at their default, and the thinking level when --api-url makes the
-// provider ignore it, are left out so existing cache entries stay valid.
+// provider ignore it, are left out so existing cache entries stay valid. The
+// agent loop's explore mode and unverifiable-claims policy change which
+// findings it returns, so they are part of the identity while the loop runs.
 func reviewCacheModelID(cfg *config.Config) string {
 	id := cfg.Model
 	if len(cfg.Models) > 1 {
@@ -1410,6 +1426,15 @@ func reviewCacheModelID(cfg *config.Config) string {
 	}
 	if cfg.ThinkingLevel != "" && cfg.APIURL == "" {
 		id += ":thinking=" + cfg.ThinkingLevel
+	}
+	if cfg.AgentLoop {
+		if cfg.AgentMode == AgentModeExplore {
+			id += fmt.Sprintf(":agent_mode=explore:agent_max_added=%d:agent_added_max_severity=%s",
+				addedFindingsCap(cfg.AgentMaxAdded), addedSeverityCap(cfg.AddedMaxSeverity))
+		}
+		if cfg.UnverifiableClaims == UnverifiableClaimsDowngrade {
+			id += ":unverifiable_claims=downgrade"
+		}
 	}
 	if cfg.Version != "" {
 		id += ":version=" + cfg.Version

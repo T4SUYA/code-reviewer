@@ -22,6 +22,14 @@ func TestReviewCacheModelID(t *testing.T) {
 		{"thinking level with profile and version", config.Config{Model: "m", Profile: "security", ThinkingLevel: "low", Version: "1.0"}, "m:profile=security:thinking=low:version=1.0"},
 		{"consensus", config.Config{Models: []string{"a", "b"}, ConsensusThreshold: 2, ThinkingLevel: "medium"}, "consensus:a+b:threshold=2:thinking=medium"},
 		{"api-url ignores the thinking level", config.Config{Model: "m", APIURL: "https://example.com/v1", ThinkingLevel: "high"}, "m"},
+		{"agent loop at its defaults", config.Config{Model: "m", AgentLoop: true, AgentMode: "refine", UnverifiableClaims: "keep"}, "m"},
+		{"agent settings are inert without the loop", config.Config{Model: "m", AgentMode: "explore", UnverifiableClaims: "downgrade"}, "m"},
+		{"explore mode", config.Config{Model: "m", AgentLoop: true, AgentMode: "explore"}, "m:agent_mode=explore:agent_max_added=5:agent_added_max_severity=MEDIUM"},
+		{"explore mode with explicit defaults", config.Config{Model: "m", AgentLoop: true, AgentMode: "explore", AgentMaxAdded: 5, AddedMaxSeverity: "medium"}, "m:agent_mode=explore:agent_max_added=5:agent_added_max_severity=MEDIUM"},
+		{"explore mode with limits", config.Config{Model: "m", AgentLoop: true, AgentMode: "explore", AgentMaxAdded: 2, AddedMaxSeverity: "HIGH"}, "m:agent_mode=explore:agent_max_added=2:agent_added_max_severity=HIGH"},
+		{"unverifiable claims", config.Config{Model: "m", AgentLoop: true, UnverifiableClaims: "downgrade"}, "m:unverifiable_claims=downgrade"},
+		{"agent settings with thinking and version", config.Config{Model: "m", ThinkingLevel: "low", AgentLoop: true, AgentMode: "explore", UnverifiableClaims: "downgrade", Version: "1.0"},
+			"m:thinking=low:agent_mode=explore:agent_max_added=5:agent_added_max_severity=MEDIUM:unverifiable_claims=downgrade:version=1.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -37,6 +45,25 @@ func TestReviewCacheModelID_ThinkingLevelsDiffer(t *testing.T) {
 	high := reviewCacheModelID(&config.Config{Model: "m", ThinkingLevel: "high"})
 	if low == high {
 		t.Errorf("different thinking levels share cache identity %q", low)
+	}
+}
+
+func TestReviewCacheModelID_AgentSettingsDiffer(t *testing.T) {
+	base := config.Config{Model: "m", AgentLoop: true}
+	variants := map[string]config.Config{
+		"default":   base,
+		"explore":   {Model: "m", AgentLoop: true, AgentMode: "explore"},
+		"downgrade": {Model: "m", AgentLoop: true, UnverifiableClaims: "downgrade"},
+		"both":      {Model: "m", AgentLoop: true, AgentMode: "explore", UnverifiableClaims: "downgrade"},
+		"explore 2": {Model: "m", AgentLoop: true, AgentMode: "explore", AgentMaxAdded: 2},
+	}
+	seen := map[string]string{}
+	for name, cfg := range variants {
+		id := reviewCacheModelID(&cfg)
+		if other, dup := seen[id]; dup {
+			t.Errorf("%s and %s share cache identity %q", name, other, id)
+		}
+		seen[id] = name
 	}
 }
 
