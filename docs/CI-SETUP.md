@@ -350,6 +350,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `temperature` | `--temperature` | `REVIEW_TEMPERATURE` | — | Sampling temperature (0-2); unset keeps the built-in 0.2 |
 | `prompt_profile` | `--prompt-profile` | `REVIEW_PROMPT_PROFILE` | `precision` | `precision`, `balanced` or `recall`; replaces the stance line of the built-in prompt (pair `recall` with a lower `confidence_floor`) |
 | `thinking_level` | `--thinking-level` | `REVIEW_THINKING_LEVEL` | — | `minimal`, `low`, `medium` or `high`; sent as the thinking config of Vertex AI generation requests (ignored with `api_url`); unset sends none |
+| `learnings` | `--learnings` | `REVIEW_LEARNINGS` | — | Path to a YAML/JSON file of previously dismissed findings added to the prompt as context (max 20 entries / 4,000 characters per prompt); in CI an in-checkout file is read from the base ref; part of every file's cache key |
 | `use_temperature` | `--use-temperature` | `REVIEW_USE_TEMPERATURE` | `true` | `false` sends no temperature on any model call (the model's default applies); conflicts with `temperature` |
 | `agent` | `--agent` | — | `false` | Enable the agent refinement loop that verifies findings with tools |
 | `agent_scope` | `--agent-scope` | — | `all` | Findings the loop examines: `all` or `high_severity_only` |

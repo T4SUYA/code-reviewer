@@ -2342,3 +2342,32 @@ func TestParsePromptProfile(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_LearningsPath(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		env  string
+		args []string
+		want string
+	}{
+		{name: "unset by default"},
+		{name: "yaml", yaml: "learnings: .review/learnings.yaml\n", want: ".review/learnings.yaml"},
+		{name: "env", env: "env.yaml", want: "env.yaml"},
+		{name: "flag", args: []string{"--learnings", "flag.yaml"}, want: "flag.yaml"},
+		{name: "env overrides yaml", yaml: "learnings: yaml.yaml\n", env: "env.yaml", want: "env.yaml"},
+		{name: "flag overrides env", env: "env.yaml", args: []string{"--learnings=flag.yaml"}, want: "flag.yaml"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("REVIEW_LEARNINGS", tt.env)
+			cfg, err := loadWithAgentScope(t, tt.yaml, tt.args...)
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.LearningsPath != tt.want {
+				t.Errorf("LearningsPath = %q, want %q", cfg.LearningsPath, tt.want)
+			}
+		})
+	}
+}

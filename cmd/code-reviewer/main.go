@@ -139,6 +139,11 @@ func run(ctx, initCtx context.Context) (int, error) {
 		}
 	}
 
+	learningEntries, err := reviewer.LoadLearnings(ctx, cfg)
+	if err != nil {
+		return 0, &config.ConfigError{Err: err}
+	}
+
 	if cfg.ThinkingLevel != "" && cfg.APIURL != "" {
 		slog.Warn("thinking level is not sent to --api-url endpoints; ignoring", "thinking_level", cfg.ThinkingLevel)
 	}
@@ -216,6 +221,7 @@ func run(ctx, initCtx context.Context) (int, error) {
 	}
 
 	rev := reviewer.NewWithContext(cfg, modelProvider, vcsClient, ctxProvider)
+	rev.SetLearnings(learningEntries)
 
 	// Wire agent loop chatter when --agent is enabled.
 	if cfg.AgentLoop {

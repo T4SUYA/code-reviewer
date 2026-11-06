@@ -231,7 +231,7 @@ func FilterRulesByPaths(rules []Rule, filePaths []string) []Rule {
 func ruleMatchesAnyFile(patterns, filePaths []string) bool {
 	for _, fp := range filePaths {
 		for _, pattern := range patterns {
-			if matchPathPattern(pattern, fp) {
+			if MatchPathPattern(pattern, fp) {
 				return true
 			}
 		}
@@ -239,7 +239,20 @@ func ruleMatchesAnyFile(patterns, filePaths []string) bool {
 	return false
 }
 
-func matchPathPattern(pattern, fp string) bool {
+// ValidatePathPattern reports whether pattern is a well-formed path glob as
+// MatchPathPattern understands it, including ** patterns.
+func ValidatePathPattern(pattern string) error {
+	if strings.Contains(pattern, "**") {
+		_, err := globstarToRegexp(pattern)
+		return err
+	}
+	_, err := filepath.Match(pattern, "")
+	return err
+}
+
+// MatchPathPattern reports whether the glob pattern (supporting **) matches the
+// file path or its base name.
+func MatchPathPattern(pattern, fp string) bool {
 	base := filepath.Base(fp)
 	// Standard filepath.Match against full path and basename
 	if matched, _ := filepath.Match(pattern, fp); matched {
