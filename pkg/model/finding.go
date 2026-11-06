@@ -23,3 +23,7 @@ func FindingsMatch(a, b Finding) bool {
 	}
 	return lineDiff <= 3
 }
+
+// OriginAgentExplore is the Finding.Origin of a finding the agent loop added
+// in explore mode. Findings from the review pass have no origin.
+const OriginAgentExplore = "agent_explore"

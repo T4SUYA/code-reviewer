@@ -15,6 +15,7 @@ import (
 // ToolResult holds the output of a tool invocation.
 type ToolResult struct {
 	Tool   string `json:"tool"`
+	ID     string `json:"id,omitempty"` // Set when the loop tracks tool calls so findings can cite them.
 	Output string `json:"output"`
 	Error  string `json:"error,omitempty"`
 }

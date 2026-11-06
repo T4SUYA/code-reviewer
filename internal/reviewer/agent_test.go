@@ -385,7 +385,7 @@ func TestRunAgentLoop_RequestsSchemaConstrainedJSON(t *testing.T) {
 // Every shape the loop accepts must be expressible in the schema, and every
 // schema branch must be something the loop can execute.
 func TestAgentResponseSchema_MatchesLoopProtocol(t *testing.T) {
-	schema := agentResponseSchema(NewToolRegistry(""), true)
+	schema := agentResponseSchema(NewToolRegistry(""), true, agentPolicy{})
 
 	actions := map[string]bool{}
 	tools := map[string]bool{}
@@ -429,6 +429,9 @@ func TestAgentResponseSchema_MatchesLoopProtocol(t *testing.T) {
 	typ := reflect.TypeOf(model.Finding{})
 	for i := 0; i < typ.NumField(); i++ {
 		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name == "origin" {
+			continue // Set by the loop on findings it adds; the model never writes it.
+		}
 		if findingProps[name] == nil {
 			t.Errorf("finding field %q is missing from the schema, so a refined finding could not carry it", name)
 		}

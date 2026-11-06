@@ -29,7 +29,7 @@ func TestBuiltInTools_PromptAndSchemaMatchGolden(t *testing.T) {
 		"agent_schema_with_tools.golden.json": true,
 		"agent_schema_final_turn.golden.json": false,
 	} {
-		got, err := json.MarshalIndent(agentResponseSchema(reg, withTools), "", "  ")
+		got, err := json.MarshalIndent(agentResponseSchema(reg, withTools, agentPolicy{}), "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +38,7 @@ func TestBuiltInTools_PromptAndSchemaMatchGolden(t *testing.T) {
 		}
 	}
 
-	if got := buildRefinementSystemPrompt(`[{"file":"a.go"}]`, reg.Prompt()); got != readGolden(t, "refinement_prompt.golden.txt") {
+	if got := buildRefinementSystemPrompt(`[{"file":"a.go"}]`, reg.Prompt(), agentPolicy{}); got != readGolden(t, "refinement_prompt.golden.txt") {
 		t.Errorf("refinement prompt differs from golden:\n%s", got)
 	}
 	if ToolSchemas() != reg.Prompt() {
@@ -115,7 +115,7 @@ func TestToolRegistry_SchemaBranchFollowsInputSchema(t *testing.T) {
 	if err := reg.Register(tool); err != nil {
 		t.Fatal(err)
 	}
-	branches := agentResponseSchema(reg, true).AnyOf
+	branches := agentResponseSchema(reg, true, agentPolicy{}).AnyOf
 	var args = branches[3].Properties["args"]
 	if branches[3].Properties["tool"].Enum[0] != "srv.echo" {
 		t.Fatalf("branch 3 is not the registered tool: %+v", branches[3].Properties["tool"])

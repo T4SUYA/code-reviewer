@@ -12,8 +12,10 @@ import "google.golang.org/genai"
 // The root must be a bare AnyOf: the API rejects any other field beside it.
 // The tool branches come from the registry, one per registered tool.
 // Without withTools the tool branches are left out, which forces the final
-// turn to answer instead of asking for more context.
-func agentResponseSchema(tools *ToolRegistry, withTools bool) *genai.Schema {
+// turn to answer instead of asking for more context. With the downgrade
+// policy the "done" branch is left out too, so every answer carries the
+// per-finding external-claim fields the policy is enforced from.
+func agentResponseSchema(tools *ToolRegistry, withTools bool, policy agentPolicy) *genai.Schema {
 	str := &genai.Schema{Type: genai.TypeString}
 	num := &genai.Schema{Type: genai.TypeInteger}
 
@@ -21,22 +23,23 @@ func agentResponseSchema(tools *ToolRegistry, withTools bool) *genai.Schema {
 	if withTools {
 		branches = tools.schemaBranches()
 	}
-	return &genai.Schema{AnyOf: append(branches,
-		&genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"action":   {Type: genai.TypeString, Enum: []string{"findings"}},
-				"findings": {Type: genai.TypeArray, Items: findingSchema(str, num)},
-			},
-			Required:         []string{"action", "findings"},
-			PropertyOrdering: []string{"action", "findings"},
+	branches = append(branches, &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"action":   {Type: genai.TypeString, Enum: []string{"findings"}},
+			"findings": {Type: genai.TypeArray, Items: findingSchema(str, num, policy)},
 		},
-		&genai.Schema{
+		Required:         []string{"action", "findings"},
+		PropertyOrdering: []string{"action", "findings"},
+	})
+	if !policy.downgrade {
+		branches = append(branches, &genai.Schema{
 			Type:       genai.TypeObject,
 			Properties: map[string]*genai.Schema{"action": {Type: genai.TypeString, Enum: []string{"done"}}},
 			Required:   []string{"action"},
-		},
-	)}
+		})
+	}
+	return &genai.Schema{AnyOf: branches}
 }
 
 // findingSchema mirrors model.Finding's JSON fields. A refined finding replaces
@@ -44,8 +47,8 @@ func agentResponseSchema(tools *ToolRegistry, withTools bool) *genai.Schema {
 // Location and content fields are required: the API treats any other field as
 // optional, and a refined finding without its line or old_line no longer
 // matches its initial finding, which would silently dismiss it.
-func findingSchema(str, num *genai.Schema) *genai.Schema {
-	return &genai.Schema{
+func findingSchema(str, num *genai.Schema, policy agentPolicy) *genai.Schema {
+	schema := &genai.Schema{
 		Type: genai.TypeObject,
 		Properties: map[string]*genai.Schema{
 			"file": str, "line": num, "old_line": num, "end_line": num,
@@ -56,4 +59,22 @@ func findingSchema(str, num *genai.Schema) *genai.Schema {
 		},
 		Required: []string{"file", "line", "old_line", "severity", "category", "title", "body"},
 	}
+	if policy.downgrade {
+		schema.Properties["external_claim"] = &genai.Schema{Type: genai.TypeBoolean}
+		schema.Properties["verified_by"] = &genai.Schema{Type: genai.TypeArray, Items: str}
+		schema.Required = append(schema.Required, "external_claim", "verified_by")
+	}
+	if policy.explore {
+		schema.Properties["evidence"] = &genai.Schema{
+			Type: genai.TypeArray,
+			Items: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"tool_call_id": str, "file": str, "start_line": num, "end_line": num,
+				},
+				Required: []string{"tool_call_id", "file", "start_line", "end_line"},
+			},
+		}
+	}
+	return schema
 }

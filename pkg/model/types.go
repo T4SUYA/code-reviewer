@@ -28,6 +28,7 @@ type Finding struct {
 	Fingerprint  string `json:"fingerprint,omitempty"`  // set by the reviewer; see reviewer.Fingerprint
 	Anchor       string `json:"anchor,omitempty"`       // set by the reviewer; hash of the anchored lines
 	AnchorLines  int    `json:"anchor_lines,omitempty"` // set by the reviewer; lines the anchor spans
+	Origin       string `json:"origin,omitempty"`       // set by the reviewer; empty for a finding from the review pass, OriginAgentExplore for one the agent loop added
 }
 
 // TokenUsage tracks token consumption across model calls.

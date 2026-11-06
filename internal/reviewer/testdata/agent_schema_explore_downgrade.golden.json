@@ -1,0 +1,251 @@
+{
+  "anyOf": [
+    {
+      "properties": {
+        "action": {
+          "enum": [
+            "tool"
+          ],
+          "type": "STRING"
+        },
+        "args": {
+          "properties": {
+            "end_line": {
+              "type": "INTEGER"
+            },
+            "path": {
+              "type": "STRING"
+            },
+            "start_line": {
+              "type": "INTEGER"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "OBJECT"
+        },
+        "tool": {
+          "enum": [
+            "read_file"
+          ],
+          "type": "STRING"
+        }
+      },
+      "propertyOrdering": [
+        "action",
+        "tool",
+        "args"
+      ],
+      "required": [
+        "action",
+        "tool",
+        "args"
+      ],
+      "type": "OBJECT"
+    },
+    {
+      "properties": {
+        "action": {
+          "enum": [
+            "tool"
+          ],
+          "type": "STRING"
+        },
+        "args": {
+          "properties": {
+            "symbol": {
+              "type": "STRING"
+            }
+          },
+          "required": [
+            "symbol"
+          ],
+          "type": "OBJECT"
+        },
+        "tool": {
+          "enum": [
+            "find_definition"
+          ],
+          "type": "STRING"
+        }
+      },
+      "propertyOrdering": [
+        "action",
+        "tool",
+        "args"
+      ],
+      "required": [
+        "action",
+        "tool",
+        "args"
+      ],
+      "type": "OBJECT"
+    },
+    {
+      "properties": {
+        "action": {
+          "enum": [
+            "tool"
+          ],
+          "type": "STRING"
+        },
+        "args": {
+          "properties": {
+            "path": {
+              "type": "STRING"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "OBJECT"
+        },
+        "tool": {
+          "enum": [
+            "list_directory"
+          ],
+          "type": "STRING"
+        }
+      },
+      "propertyOrdering": [
+        "action",
+        "tool",
+        "args"
+      ],
+      "required": [
+        "action",
+        "tool",
+        "args"
+      ],
+      "type": "OBJECT"
+    },
+    {
+      "properties": {
+        "action": {
+          "enum": [
+            "findings"
+          ],
+          "type": "STRING"
+        },
+        "findings": {
+          "items": {
+            "properties": {
+              "anchor": {
+                "type": "STRING"
+              },
+              "anchor_lines": {
+                "type": "INTEGER"
+              },
+              "body": {
+                "type": "STRING"
+              },
+              "category": {
+                "type": "STRING"
+              },
+              "code_snippet": {
+                "type": "STRING"
+              },
+              "end_line": {
+                "type": "INTEGER"
+              },
+              "evidence": {
+                "items": {
+                  "properties": {
+                    "end_line": {
+                      "type": "INTEGER"
+                    },
+                    "file": {
+                      "type": "STRING"
+                    },
+                    "start_line": {
+                      "type": "INTEGER"
+                    },
+                    "tool_call_id": {
+                      "type": "STRING"
+                    }
+                  },
+                  "required": [
+                    "tool_call_id",
+                    "file",
+                    "start_line",
+                    "end_line"
+                  ],
+                  "type": "OBJECT"
+                },
+                "type": "ARRAY"
+              },
+              "existing_code": {
+                "type": "STRING"
+              },
+              "external_claim": {
+                "type": "BOOLEAN"
+              },
+              "file": {
+                "type": "STRING"
+              },
+              "fingerprint": {
+                "type": "STRING"
+              },
+              "line": {
+                "type": "INTEGER"
+              },
+              "old_line": {
+                "type": "INTEGER"
+              },
+              "rule_file": {
+                "type": "STRING"
+              },
+              "rule_name": {
+                "type": "STRING"
+              },
+              "rule_source": {
+                "type": "STRING"
+              },
+              "rule_url": {
+                "type": "STRING"
+              },
+              "severity": {
+                "type": "STRING"
+              },
+              "suggestion": {
+                "type": "STRING"
+              },
+              "title": {
+                "type": "STRING"
+              },
+              "verified_by": {
+                "items": {
+                  "type": "STRING"
+                },
+                "type": "ARRAY"
+              }
+            },
+            "required": [
+              "file",
+              "line",
+              "old_line",
+              "severity",
+              "category",
+              "title",
+              "body",
+              "external_claim",
+              "verified_by"
+            ],
+            "type": "OBJECT"
+          },
+          "type": "ARRAY"
+        }
+      },
+      "propertyOrdering": [
+        "action",
+        "findings"
+      ],
+      "required": [
+        "action",
+        "findings"
+      ],
+      "type": "OBJECT"
+    }
+  ]
+}

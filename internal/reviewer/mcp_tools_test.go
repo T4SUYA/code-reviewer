@@ -110,7 +110,7 @@ func TestRegisterMCPTools_SkipsToolsWithUnsupportedSchemaAndKeepsTheRest(t *test
 	}
 	// The response schema still builds for the remaining tools.
 	pinned := false
-	for _, branch := range agentResponseSchema(reg, true).AnyOf {
+	for _, branch := range agentResponseSchema(reg, true, agentPolicy{}).AnyOf {
 		if tool := branch.Properties["tool"]; tool != nil && tool.Enum[0] == "docs.lookup" {
 			pinned = true
 		}

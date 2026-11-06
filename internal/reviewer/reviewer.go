@@ -87,7 +87,27 @@ func (r *Reviewer) agentConfig(remainingBudget int64) AgentConfig {
 		MCPServers:            mcpServerConfigs(r.cfg.AgentMCPServers),
 		DependencyTools:       r.cfg.AgentTools,
 		DependencyToolOptions: r.cfg.AgentToolOptions.DependencyToolOptions(),
+
+		Mode:               r.cfg.AgentMode,
+		MaxAddedFindings:   r.cfg.AgentMaxAdded,
+		UnverifiableClaims: r.cfg.UnverifiableClaims,
+		SeverityLocked:     r.severityLocked,
 	}
+}
+
+// severityLocked reports whether a configured rule fixes the finding's
+// severity, as enforceRuleAttributionAndSuppressions does for every finding
+// named after a rule.
+func (r *Reviewer) severityLocked(f model.Finding) bool {
+	if f.RuleName == "" {
+		return false
+	}
+	for _, rule := range r.cfg.Rules {
+		if strings.EqualFold(rule.Name, f.RuleName) {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpServerConfigs converts the configured MCP servers for the agent loop.
@@ -381,7 +401,6 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		}
 	}
 
-
 	// Step 3: Check context window / chunk.
 	tokenLimit := r.cfg.TokenLimit
 	if tokenLimit <= 0 {
@@ -581,6 +600,11 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 				totalUsage.TotalTokens += agentResult.Usage.TotalTokens
 				agentVerdicts = agentResult.Verdicts
 			}
+			if err == nil && agentResult != nil {
+				// Findings the loop added must sit on lines of the diff like any other.
+				scoped = validateAddedFindings(scoped, diffs)
+				agentResult.Added = countAdded(scoped)
+			}
 			agentAudit = newAgentAudit(agentResult, err, len(allFindings), len(scoped))
 			if err != nil {
 				slog.Warn("agent loop failed, using initial findings", "error", err)
@@ -608,7 +632,7 @@ skipAgent:
 		for _, f := range allFindings {
 			byFile[f.File] = append(byFile[f.File], f)
 		}
-		
+
 		for _, d := range diffs { // diffs now holds only uncached
 			if !reviewedFiles[d.NewPath] {
 				continue
@@ -858,8 +882,6 @@ skipAgent:
 			}
 		}
 	}
-
-
 
 	return len(allFindings) + suppressedBlocking, nil
 }
