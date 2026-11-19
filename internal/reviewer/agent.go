@@ -65,7 +65,7 @@ type AgentConfig struct {
 	Timeout         time.Duration      // Wall-clock timeout (default 3m).
 	RepoRoot        string             // Repository root for tool access.
 	OmitTemperature bool               // Send no temperature, leaving the model's own default (default false: 0.0).
-	ThinkingLevel   string             // Thinking level sent on every turn: minimal, low, medium or high ("" = send none).
+	ThinkingLevel   string             // Thinking level sent on every turn: minimal, low, medium, high or xhigh ("" = send none).
 	ExtraTools      []Tool             // Tools registered after the built-in repository tools.
 	MCPServers      []mcp.ServerConfig // MCP servers whose allowlisted tools register as "<server>.<tool>".
 	// DependencyTools names the dependency tools to register (pinned_version,
