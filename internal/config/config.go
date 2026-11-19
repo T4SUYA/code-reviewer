@@ -1382,7 +1382,7 @@ func ParsePromptProfile(s string) (string, error) {
 }
 
 // ThinkingLevels lists the accepted thinking-level values, lowest first.
-var ThinkingLevels = []string{"minimal", "low", "medium", "high"}
+var ThinkingLevels = []string{"minimal", "low", "medium", "high", "xhigh"}
 
 // ParseThinkingLevel normalizes a thinking level to lower case and checks it
 // against ThinkingLevels.
