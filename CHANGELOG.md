@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - The agent loop's tools live in a registry. `read_file`, `find_definition` and `list_directory` register into it with the same names, arguments, prompt text and response schema as before; a golden test pins the prompt and schema. `agent.ToolRegistry` gains `Register`, `Names` and `Prompt`.
 - New dependency: `github.com/modelcontextprotocol/go-sdk` (Apache-2.0, with MIT-licensed contributions not yet relicensed).
+### Fixed
+- Gemini 4 models (`gemini-4-argon`, `gemini-4-carbon`, `gemini-4-neon`, `gemini-4-hydrogen`) now resolve to their 1,048,576-token context window (listed as 1,000,000, like the other 1M-token models) instead of the 128,000-token default for unknown models (#TBD). With `chunk_strategy: split` a diff is no longer cut into far more chunks than needed, and with the default `fail` strategy a diff that fits is no longer refused.
 
 ## [0.28.0] — 2026-11-02
 
