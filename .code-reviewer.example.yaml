@@ -28,6 +28,10 @@ model: gemini-3.8-flash
 # parameters. Cannot be combined with temperature.
 # use_temperature: false
 
+# Constrain the Vertex AI review response with a JSON schema (default true).
+# false asks for JSON in the prompt only. Never sent with custom_prompt or api_url.
+# response_schema: false
+
 # Precision/recall stance of the built-in review prompt: precision, balanced or recall.
 # Replaces only the line that says when to report a finding. precision (default) is the
 # prompt unchanged; recall asks the model to report every suspicious pattern with an honest
