@@ -604,6 +604,8 @@ Some models deprecate or reject sampling parameters. Google's Gemini 3 documenta
 
 To choose how much a thinking model reasons before answering, set `thinking_level` (or `--thinking-level`, or `REVIEW_THINKING_LEVEL`) to `minimal`, `low`, `medium`, `high` or `xhigh`. The level is sent as the `ThinkingConfig` of every Vertex AI generation request (review, summary, explain, consensus and the agent loop) exactly as given, so a model that does not accept it returns its own API error. When unset, no thinking config is sent and the request is unchanged. It is not sent to `--api-url` endpoints, which log a warning and ignore it.
 
+The `usage` object of the JSON report (`--json`) and of the audit log (`--audit-log`) is the sum over every model call of the run and has five counts: `input_tokens`, `cached_input_tokens`, `output_tokens`, `thinking_tokens` and `total_tokens`. `cached_input_tokens` is a subset of `input_tokens`: the part of the prompt the provider served from a cache, usually billed at a discount. `input_tokens` is not reduced by it. A provider that does not report a count leaves it at zero. Over Vertex AI `thinking_tokens` is reported apart from `output_tokens`; over `--api-url` it is part of `output_tokens`.
+
 To choose how conservative the review is, set `prompt_profile` (or `--prompt-profile`, or `REVIEW_PROMPT_PROFILE`). It replaces one line of the built-in prompt, the stance that tells the model when to report a finding; everything else in the prompt is unchanged.
 
 | Profile | Stance |

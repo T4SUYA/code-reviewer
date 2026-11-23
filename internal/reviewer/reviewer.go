@@ -487,11 +487,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 					"intent", summaryResult.Intent,
 					"risk", summaryResult.RiskLevel,
 				)
-				if summaryResult.Usage != nil {
-					totalUsage.InputTokens += summaryResult.Usage.InputTokens
-					totalUsage.OutputTokens += summaryResult.Usage.OutputTokens
-					totalUsage.TotalTokens += summaryResult.Usage.TotalTokens
-				}
+				totalUsage.Add(summaryResult.Usage)
 			}
 		} else {
 			slog.Warn("intent review enabled but provider does not support summarization, skipping pass 1")
@@ -550,11 +546,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 
 			chunkSummaries = append(chunkSummaries, result.Summary)
 			allFindings = append(allFindings, result.Findings...)
-			if result.Usage != nil {
-				totalUsage.InputTokens += result.Usage.InputTokens
-				totalUsage.OutputTokens += result.Usage.OutputTokens
-				totalUsage.TotalTokens += result.Usage.TotalTokens
-			}
+			totalUsage.Add(result.Usage)
 		}
 
 		// Runtime budget safety net — stop if actual usage exceeds limit.
@@ -589,7 +581,9 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 	if totalUsage.TotalTokens > 0 {
 		slog.Info("token usage",
 			"input", totalUsage.InputTokens,
+			"cached_input", totalUsage.CachedInputTokens,
 			"output", totalUsage.OutputTokens,
+			"thinking", totalUsage.ThinkingTokens,
 			"total", totalUsage.TotalTokens,
 		)
 	}
@@ -618,9 +612,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			scoped, agentResult, err := runScopedAgentLoop(ctx, r.chatter, agentCfg, allFindings, r.cfg.AgentScope)
 			// Always aggregate usage, even on error (agent preserves accumulated tokens).
 			if agentResult != nil {
-				totalUsage.InputTokens += agentResult.Usage.InputTokens
-				totalUsage.OutputTokens += agentResult.Usage.OutputTokens
-				totalUsage.TotalTokens += agentResult.Usage.TotalTokens
+				totalUsage.Add(&agentResult.Usage)
 				agentVerdicts = agentResult.Verdicts
 			}
 			if err == nil && agentResult != nil {
