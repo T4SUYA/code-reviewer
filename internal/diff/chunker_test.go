@@ -2,7 +2,11 @@ package diff
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -238,7 +242,9 @@ func TestSplitStrategy_FileLargerThanTargetGetsOwnChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"huge.go"}, {"small1.go", "small2.go"}}
+	// Chunks follow the input order of their first file; the oversized file is
+	// alone in its own.
+	want := [][]string{{"small1.go", "small2.go"}, {"huge.go"}}
 	if got := chunkPaths(chunks); !reflect.DeepEqual(got, want) {
 		t.Errorf("chunks = %v, want %v", got, want)
 	}
@@ -350,5 +356,177 @@ func TestSplitChunk(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// packed returns the chunks of the files, each a path list, using a target
+// that makes a chunk hold about `perChunk` files of 100 tokens.
+func packed(t *testing.T, perChunk int, diffs []FileDiff) [][]string {
+	t.Helper()
+	chunks, err := (&SplitStrategy{TargetTokens: perChunk*100 + 50}).Chunk(diffs, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return chunkPaths(chunks)
+}
+
+func sized100(paths ...string) []FileDiff {
+	var ds []FileDiff
+	for _, p := range paths {
+		ds = append(ds, sizedDiff(p, 100))
+	}
+	return ds
+}
+
+func TestSplitStrategy_KeepsDirectoriesTogether(t *testing.T) {
+	// Interleaved in the input, as a priority order would leave them.
+	diffs := sized100(
+		"svc/api/handler.go", "svc/store/db.go", "svc/api/routes.go",
+		"svc/store/queries.go", "svc/api/auth.go", "svc/store/tx.go",
+	)
+	got := packed(t, 3, diffs)
+	want := [][]string{
+		{"svc/api/auth.go", "svc/api/handler.go", "svc/api/routes.go"},
+		{"svc/store/db.go", "svc/store/queries.go", "svc/store/tx.go"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("chunks = %v, want %v", got, want)
+	}
+}
+
+func TestSplitStrategy_SourceAndTestsShareAChunk(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths []string
+	}{
+		{"go: test beside source", []string{"pkg/a/a.go", "pkg/a/a_test.go", "pkg/b/b.go", "pkg/b/b_test.go"}},
+		{"java: src/main and src/test", []string{"mod/src/main/java/app/A.java", "mod/src/test/java/app/ATest.java", "mod/src/main/java/lib/B.java", "mod/src/test/java/lib/BTest.java"}},
+		{"python: tests directory", []string{"a/mod.py", "tests/a/test_mod.py", "b/other.py", "tests/b/test_other.py"}},
+		{"ts: __tests__ directory", []string{"web/a/x.ts", "web/a/__tests__/x.test.ts", "web/b/y.ts", "web/b/__tests__/y.test.ts"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := packed(t, 2, sized100(tt.paths...))
+			if len(got) != 2 {
+				t.Fatalf("chunks = %v, want 2 chunks of two", got)
+			}
+			// Each chunk holds one source file and its test: the same stem.
+			for _, c := range got {
+				if len(c) != 2 {
+					t.Fatalf("chunks = %v, want two files per chunk", got)
+				}
+				stem := func(p string) string {
+					b := p[strings.LastIndex(p, "/")+1:]
+					b = strings.TrimSuffix(b, filepath.Ext(b))
+					b = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(b, ".test"), "_test"), "Test")
+					return strings.ToLower(strings.TrimPrefix(b, "test_"))
+				}
+				if stem(c[0]) != stem(c[1]) {
+					t.Errorf("chunk %v splits a source file from its test", c)
+				}
+			}
+		})
+	}
+}
+
+func TestSplitStrategy_SmallDirectoriesJoinUnderTheirParent(t *testing.T) {
+	// Four directories of one file each, two chunks: neighbours under the same
+	// parent land together rather than by size.
+	diffs := []FileDiff{
+		sizedDiff("x/a/one.go", 100), sizedDiff("y/b/two.go", 100),
+		sizedDiff("x/c/three.go", 100), sizedDiff("y/d/four.go", 100),
+	}
+	got := packed(t, 2, diffs)
+	want := [][]string{{"x/a/one.go", "x/c/three.go"}, {"y/b/two.go", "y/d/four.go"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("chunks = %v, want %v", got, want)
+	}
+}
+
+func TestSplitStrategy_OversizedDirectorySplitsLargestFirst(t *testing.T) {
+	diffs := []FileDiff{
+		sizedDiff("d/small1.go", 40), sizedDiff("d/big.go", 150),
+		sizedDiff("d/small2.go", 40), sizedDiff("d/mid.go", 100),
+	}
+	chunks, err := (&SplitStrategy{TargetTokens: 200}).Chunk(diffs, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Largest first, each into the first chunk with room: big+small1 | mid+small2.
+	want := [][]string{{"d/big.go", "d/small1.go"}, {"d/mid.go", "d/small2.go"}}
+	if got := chunkPaths(chunks); !reflect.DeepEqual(got, want) {
+		t.Errorf("chunks = %v, want %v", got, want)
+	}
+}
+
+func TestSplitStrategy_PackingIsDeterministicWhateverTheInputOrder(t *testing.T) {
+	var diffs []FileDiff
+	for _, dir := range []string{"a", "a/sub", "b", "c/d", "c/e", "f"} {
+		for i := range 3 {
+			diffs = append(diffs, sizedDiff(fmt.Sprintf("%s/f%d.go", dir, i), 60+10*i))
+		}
+	}
+	s := &SplitStrategy{TargetTokens: 400}
+	members := func(ds []FileDiff) []string {
+		chunks, err := s.Chunk(ds, 1_000_000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, c := range chunks {
+			var ps []string
+			for _, d := range c {
+				ps = append(ps, d.NewPath)
+			}
+			out = append(out, strings.Join(ps, ","))
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := members(diffs)
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 25 {
+		shuffled := append([]FileDiff(nil), diffs...)
+		rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		if got := members(shuffled); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the same files in another input order packed differently:\n got %v\nwant %v", got, want)
+		}
+	}
+}
+
+func TestSplitStrategy_ChunksFollowTheInputPriority(t *testing.T) {
+	diffs := []FileDiff{sizedDiff("z/secret.go", 100), sizedDiff("a/readme.go", 100), sizedDiff("z/other.go", 100), sizedDiff("a/doc.go", 100)}
+	got := packed(t, 2, diffs)
+	if !slices.Contains(got[0], "z/secret.go") {
+		t.Errorf("chunks = %v, want the chunk of the first input file first", got)
+	}
+}
+
+func TestSplitStrategy_EveryFileOnceAndChunksFit(t *testing.T) {
+	var diffs []FileDiff
+	for i := range 60 {
+		diffs = append(diffs, sizedDiff(fmt.Sprintf("p%d/q%d/f%d.go", i%5, i%7, i), 20+(i*37)%150))
+	}
+	const target = 500
+	chunks, err := (&SplitStrategy{TargetTokens: target}).Chunk(diffs, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for i, c := range chunks {
+		for _, d := range c {
+			seen[d.NewPath]++
+		}
+		if got := EstimateTokens(c); got > target && len(c) > 1 {
+			t.Errorf("chunk %d holds %d files and ~%d tokens, over the target %d", i, len(c), got, target)
+		}
+	}
+	if len(seen) != len(diffs) {
+		t.Fatalf("%d distinct files in the chunks, want %d", len(seen), len(diffs))
+	}
+	for p, n := range seen {
+		if n != 1 {
+			t.Errorf("%s appears %d times", p, n)
+		}
 	}
 }

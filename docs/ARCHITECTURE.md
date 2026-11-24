@@ -354,7 +354,7 @@ Two strategies controlled by `--chunk-strategy`:
 | Strategy | Behavior |
 |---|---|
 | `fail` (default) | Error if diff exceeds model context window |
-| `split` | Bin-pack files into chunks (80% effective limit, largest-first; ties keep input order) |
+| `split` | Pack files into chunks by directory (80% effective limit): a directory subtree that fits is one unit, a source file and its tests stay together (`packageDir`, `stemOf`), an oversized directory is packed largest-first, units are joined in path order up to the limit, and chunks are ordered by the input position of their first file. Deterministic for a given set of files |
 
 `--chunk-target-tokens N` lowers the `split` packing size to `N` estimated tokens (never above the 80% limit). A file larger than the target gets a chunk of its own.
 

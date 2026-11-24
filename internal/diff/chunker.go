@@ -2,6 +2,7 @@ package diff
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -37,7 +38,8 @@ func (s *FailStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, er
 const splitLimitFraction = 0.80
 
 // SplitStrategy splits diffs into groups that each fit within the token limit.
-// Files are sorted by size (largest first) and bin-packed into groups.
+// Files are packed by directory, so the files of a package, with its tests,
+// are reviewed together.
 type SplitStrategy struct {
 	// TargetTokens, when positive, is the size each group is packed to instead
 	// of 80% of the token limit. It is capped at that 80% so a group never
@@ -47,6 +49,17 @@ type SplitStrategy struct {
 }
 
 // Chunk splits diffs into groups that fit within tokenLimit.
+//
+// The files form a tree by directory. A directory whose whole subtree fits the
+// target is one unit; a larger one keeps its own files apart from its
+// subdirectories, and its own files are packed largest first into the first
+// group with room. Units are then laid out in path order and joined in that
+// order up to the target, so small directories end up with their neighbours
+// under the same parent. A source file and its tests are kept together
+// wherever they are packed (see packageDir and stemOf). The result depends on
+// the set of files only; the groups are ordered by the position of their
+// first file in diffs, so a priority order of the input decides what is
+// reviewed first. A file larger than the target is a group of its own.
 func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, error) {
 	if len(diffs) == 0 {
 		return nil, nil
@@ -61,43 +74,275 @@ func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, e
 		effectiveLimit = s.TargetTokens
 	}
 
-	// Sort by estimated tokens descending (review largest files first).
-	type indexedDiff struct {
-		diff   FileDiff
+	root := &dirNode{}
+	for i := range diffs {
+		path := diffs[i].NewPath
+		if path == "" {
+			path = diffs[i].OldPath
+		}
+		root.insert(packageDir(path), &packItem{
+			diff:   diffs[i],
+			index:  i,
+			path:   path,
+			tokens: estimateFileDiffTokens(&diffs[i]),
+		})
+	}
+	root.total()
+
+	// Join the groups, in path order, while they fit.
+	var chunks [][]*packItem
+	var current []*packItem
+	currentTokens := 0
+	for _, g := range root.groups(effectiveLimit) {
+		tokens := 0
+		for _, it := range g {
+			tokens += it.tokens
+		}
+		if currentTokens+tokens > effectiveLimit && len(current) > 0 {
+			chunks = append(chunks, current)
+			current, currentTokens = nil, 0
+		}
+		current = append(current, g...)
+		currentTokens += tokens
+	}
+	if len(current) > 0 {
+		chunks = append(chunks, current)
+	}
+
+	// Review first what the input listed first.
+	first := func(c []*packItem) int {
+		m := c[0].index
+		for _, it := range c {
+			m = min(m, it.index)
+		}
+		return m
+	}
+	sort.SliceStable(chunks, func(i, j int) bool { return first(chunks[i]) < first(chunks[j]) })
+
+	out := make([][]FileDiff, len(chunks))
+	for i, c := range chunks {
+		out[i] = make([]FileDiff, len(c))
+		for j, it := range c {
+			out[i][j] = it.diff
+		}
+	}
+	return out, nil
+}
+
+// packItem is one file in the packing tree.
+type packItem struct {
+	diff   FileDiff
+	index  int // Position in the input.
+	path   string
+	tokens int
+}
+
+// dirNode is a directory of the packing tree.
+type dirNode struct {
+	own      []*packItem
+	children map[string]*dirNode
+	sum      int // Estimated tokens of the whole subtree.
+}
+
+// insert adds item under the directory path (slash-separated, "" for the root).
+func (n *dirNode) insert(dir string, item *packItem) {
+	node := n
+	if dir != "" {
+		for _, seg := range strings.Split(dir, "/") {
+			if node.children == nil {
+				node.children = make(map[string]*dirNode)
+			}
+			child, ok := node.children[seg]
+			if !ok {
+				child = &dirNode{}
+				node.children[seg] = child
+			}
+			node = child
+		}
+	}
+	node.own = append(node.own, item)
+}
+
+// total computes the subtree sizes.
+func (n *dirNode) total() int {
+	n.sum = 0
+	for _, it := range n.own {
+		n.sum += it.tokens
+	}
+	for _, c := range n.children {
+		n.sum += c.total()
+	}
+	return n.sum
+}
+
+// sortedChildren returns the subdirectories in name order.
+func (n *dirNode) sortedChildren() []*dirNode {
+	names := make([]string, 0, len(n.children))
+	for name := range n.children {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*dirNode, len(names))
+	for i, name := range names {
+		out[i] = n.children[name]
+	}
+	return out
+}
+
+// items returns every file of the subtree in path order.
+func (n *dirNode) items() []*packItem {
+	out := append([]*packItem(nil), n.own...)
+	sortItems(out)
+	for _, c := range n.sortedChildren() {
+		out = append(out, c.items()...)
+	}
+	return out
+}
+
+// groups returns the units of the subtree in path order: the whole subtree
+// when it fits limit, otherwise the packed own files followed by the units of
+// each subdirectory.
+func (n *dirNode) groups(limit int) [][]*packItem {
+	if n.sum <= limit {
+		if items := n.items(); len(items) > 0 {
+			return [][]*packItem{items}
+		}
+		return nil
+	}
+	out := packOwn(n.own, limit)
+	for _, c := range n.sortedChildren() {
+		out = append(out, c.groups(limit)...)
+	}
+	return out
+}
+
+// sortItems orders files by path, which keeps a source file next to its tests
+// when they share a directory, and by input position for equal paths.
+func sortItems(items []*packItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].path != items[j].path {
+			return items[i].path < items[j].path
+		}
+		return items[i].index < items[j].index
+	})
+}
+
+// packOwn packs the files of one directory into groups of at most limit. A
+// source file and its tests form one unit. Units are placed largest first into
+// the first group with room, ties in path order; a unit larger than limit gets a
+// group of its own.
+func packOwn(own []*packItem, limit int) [][]*packItem {
+	byStem := make(map[string][]*packItem)
+	var stems []string
+	for _, it := range own {
+		stem := stemOf(it.path)
+		if _, ok := byStem[stem]; !ok {
+			stems = append(stems, stem)
+		}
+		byStem[stem] = append(byStem[stem], it)
+	}
+	type unit struct {
+		items  []*packItem
 		tokens int
 	}
-	indexed := make([]indexedDiff, len(diffs))
-	for i, d := range diffs {
-		indexed[i] = indexedDiff{diff: d, tokens: estimateFileDiffTokens(&d)}
+	units := make([]unit, 0, len(stems))
+	for _, stem := range stems {
+		u := unit{items: byStem[stem]}
+		sortItems(u.items)
+		for _, it := range u.items {
+			u.tokens += it.tokens
+		}
+		units = append(units, u)
 	}
-	// Stable, so files of equal size keep their input order and the same diff
-	// always produces the same chunks.
-	sort.SliceStable(indexed, func(i, j int) bool {
-		return indexed[i].tokens > indexed[j].tokens
+	sort.SliceStable(units, func(i, j int) bool {
+		if units[i].tokens != units[j].tokens {
+			return units[i].tokens > units[j].tokens
+		}
+		return units[i].items[0].path < units[j].items[0].path
 	})
 
-	// Note: if a single file exceeds the limit, we still include it.
-	// The model will do its best with a truncated context.
-
-	// Bin-pack into groups.
-	var chunks [][]FileDiff
-	var currentChunk []FileDiff
-	currentTokens := 0
-
-	for _, id := range indexed {
-		if currentTokens+id.tokens > effectiveLimit && len(currentChunk) > 0 {
-			chunks = append(chunks, currentChunk)
-			currentChunk = nil
-			currentTokens = 0
+	type bin struct {
+		items  []*packItem
+		tokens int
+	}
+	var bins []*bin
+	for _, u := range units {
+		var target *bin
+		for _, b := range bins {
+			if b.tokens+u.tokens <= limit {
+				target = b
+				break
+			}
 		}
-		currentChunk = append(currentChunk, id.diff)
-		currentTokens += id.tokens
-	}
-	if len(currentChunk) > 0 {
-		chunks = append(chunks, currentChunk)
+		if target == nil {
+			target = &bin{}
+			bins = append(bins, target)
+		}
+		target.items = append(target.items, u.items...)
+		target.tokens += u.tokens
 	}
 
-	return chunks, nil
+	out := make([][]*packItem, len(bins))
+	for i, b := range bins {
+		sortItems(b.items)
+		out[i] = b.items
+	}
+	// Keep a stable order between the groups of one directory.
+	sort.SliceStable(out, func(i, j int) bool { return out[i][0].path < out[j][0].path })
+	return out
+}
+
+// packageDir returns the directory a file is packed under: its own directory
+// with the segments that only say "tests" removed, so a package and its tests
+// meet in one node. It drops the directories named test, tests, spec, specs and
+// __tests__, and the main and test directories of a src layout.
+func packageDir(path string) string {
+	dir := filepath.ToSlash(filepath.Dir(filepath.ToSlash(path)))
+	if dir == "." || dir == "/" {
+		return ""
+	}
+	segs := strings.Split(strings.Trim(dir, "/"), "/")
+	kept := make([]string, 0, len(segs))
+	for i, seg := range segs {
+		switch seg {
+		case "test", "tests", "spec", "specs", "__tests__":
+			continue
+		case "main":
+			if i > 0 && segs[i-1] == "src" {
+				continue
+			}
+		}
+		kept = append(kept, seg)
+	}
+	return strings.Join(kept, "/")
+}
+
+// testNameSuffixes and testNamePrefixes mark a file name as a test of the file
+// with the rest of the name.
+var (
+	testNameSuffixes = []string{"_test", ".test", "_spec", ".spec", "Test", "Tests"}
+	testNamePrefixes = []string{"test_"}
+)
+
+// stemOf returns the file name without its extension and without a test marker
+// (foo_test.go, foo.test.ts, FooTest.java and test_foo.py all give foo or Foo),
+// so a file and its tests share a stem.
+func stemOf(path string) string {
+	name := filepath.Base(filepath.ToSlash(path))
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	for _, suffix := range testNameSuffixes {
+		if trimmed := strings.TrimSuffix(name, suffix); trimmed != name && trimmed != "" {
+			name = trimmed
+			break
+		}
+	}
+	for _, prefix := range testNamePrefixes {
+		if trimmed := strings.TrimPrefix(name, prefix); trimmed != name && trimmed != "" {
+			name = trimmed
+			break
+		}
+	}
+	return name
 }
 
 // DiffTooLargeError is returned by FailStrategy when the diff exceeds the model's context window.

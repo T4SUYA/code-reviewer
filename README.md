@@ -978,7 +978,7 @@ Merge request files are read from the paginated `/diffs` endpoint. GitLab 18.4 o
 Large MRs may exceed the model's context window. The `--chunk-strategy` flag controls behavior:
 
 - **`fail`** (default) — Errors with a helpful message if the diff is too large. Forces teams to scope MRs.
-- **`split`** — Auto-splits diffs into file groups, runs separate model calls, merges results.
+- **`split`** — Auto-splits diffs into file groups, runs separate model calls, merges results. Files are grouped by directory so related files are reviewed together: the files of a package and its tests (`foo_test.go`, `foo.test.ts`, `FooTest.java`, `test_foo.py`, and `test`, `tests`, `spec` or `__tests__` directories, or `src/test` beside `src/main`) share a chunk when they fit, small directories are joined with their neighbours under the same parent, and a directory too large for one chunk is packed largest file first. The same files always give the same chunks, and chunks are reviewed in the order of their first file in the priority-sorted input.
 
 The chunker interface is modular — custom strategies can be added.
 
