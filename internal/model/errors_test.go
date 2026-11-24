@@ -22,7 +22,12 @@ func TestIsFatal(t *testing.T) {
 		{"vertex 401", fmt.Errorf("generating content: %w", genai.APIError{Code: 401}), true},
 		{"vertex 403", genai.APIError{Code: 403}, true},
 		{"vertex unknown model", genai.APIError{Code: 404, Status: "NOT_FOUND"}, true},
-		{"vertex prompt too large", genai.APIError{Code: 400, Status: "INVALID_ARGUMENT"}, false},
+		{"vertex prompt too large", genai.APIError{Code: 400, Status: "INVALID_ARGUMENT", Message: "The input token count exceeds the maximum number of tokens allowed"}, false},
+		{"vertex invalid argument", genai.APIError{Code: 400, Status: "INVALID_ARGUMENT", Message: "Thinking level XHIGH is not supported by this model"}, true},
+		{"vertex unsupported schema", fmt.Errorf("generating content: %w", genai.APIError{Code: 400, Status: "INVALID_ARGUMENT", Message: "response schema is not supported"}), true},
+		{"vertex failed precondition", genai.APIError{Code: 400, Status: "FAILED_PRECONDITION", Message: "Project is not allowed to use this model"}, true},
+		{"http 400 invalid parameter", &httpStatusError{StatusCode: 400, Body: "unknown parameter: temperature"}, true},
+		{"http 400 context length", &httpStatusError{StatusCode: 400, Body: "maximum context length is 8192 tokens"}, false},
 		{"vertex overloaded", genai.APIError{Code: 503}, false},
 		{"vertex rate limit", genai.APIError{Code: 429}, false},
 		{"http 401", &httpStatusError{StatusCode: 401}, true},
@@ -54,5 +59,58 @@ func TestMarkFatal_KeepsTheCause(t *testing.T) {
 	}
 	if MarkFatal(nil) != nil {
 		t.Error("MarkFatal(nil) != nil")
+	}
+}
+
+func TestIsSplittable(t *testing.T) {
+	tooLarge := genai.APIError{Code: 400, Status: "INVALID_ARGUMENT", Message: "request is too large: input token count exceeds the limit"}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"bad answer", MarkBadAnswer(errors.New("parsing model response")), true},
+		{"bad answer wrapped", fmt.Errorf("x: %w", MarkBadAnswer(errors.New("empty"))), true},
+		{"vertex too large", tooLarge, true},
+		{"vertex 413", genai.APIError{Code: 413}, true},
+		{"http 413", &httpStatusError{StatusCode: 413}, true},
+		{"http 400 length", &httpStatusError{StatusCode: 400, Body: "prompt is too long"}, true},
+		{"rate limit", genai.APIError{Code: 429, Status: "RESOURCE_EXHAUSTED"}, false},
+		{"http 429", &httpStatusError{StatusCode: 429}, false},
+		{"quota", errors.New("quota exceeded for metric"), false},
+		{"server error", genai.APIError{Code: 500}, false},
+		{"unavailable", genai.APIError{Code: 503}, false},
+		{"http 502", &httpStatusError{StatusCode: 502}, false},
+		{"network", errors.New("HTTP request failed: connection reset by peer"), false},
+		{"timeout", fmt.Errorf("generating content: %w", context.DeadlineExceeded), false},
+		{"fatal is never splittable", MarkFatal(MarkBadAnswer(errors.New("x"))), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSplittable(tt.err); got != tt.want {
+				t.Errorf("IsSplittable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithUsage_CarriesUsageThroughWrapping(t *testing.T) {
+	u := &TokenUsage{TotalTokens: 42}
+	err := fmt.Errorf("model review: %w", WithUsage(MarkBadAnswer(errors.New("bad")), u))
+	if got := UsageOf(err); got == nil || got.TotalTokens != 42 {
+		t.Errorf("UsageOf = %v, want the carried usage", got)
+	}
+	if !IsBadAnswer(err) {
+		t.Error("the marker was lost")
+	}
+	if UsageOf(errors.New("x")) != nil || UsageOf(nil) != nil {
+		t.Error("UsageOf invented usage")
+	}
+	if WithUsage(nil, u) != nil {
+		t.Error("WithUsage(nil) != nil")
+	}
+	if e := errors.New("x"); WithUsage(e, nil) != e {
+		t.Error("WithUsage without usage should return the error unchanged")
 	}
 }

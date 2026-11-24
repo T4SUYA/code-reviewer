@@ -106,7 +106,7 @@ func TestRun_FailingPartIsReportedOnceAndOtherPartsKept(t *testing.T) {
 		res := &model.ReviewResult{}
 		for _, k := range in {
 			if k == 3 {
-				return nil, errors.New("unreadable answer")
+				return nil, model.MarkBadAnswer(errors.New("unreadable answer"))
 			}
 			f := findingFor("big.go")
 			f.Line = 100*(k-1) + 2
@@ -147,7 +147,7 @@ func TestRun_FileWithAnUnreviewedPartIsNotCached(t *testing.T) {
 			cfg.CacheMaxAge = time.Hour
 			m := &funcModel{fn: func(prompt string) (*model.ReviewResult, error) {
 				if slices.Contains(hunksIn(prompt), tt.failHunk) {
-					return nil, errors.New("unreadable answer")
+					return nil, model.MarkBadAnswer(errors.New("unreadable answer"))
 				}
 				return &model.ReviewResult{}, nil
 			}}

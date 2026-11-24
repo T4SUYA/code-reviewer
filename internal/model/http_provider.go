@@ -184,12 +184,12 @@ type chatResponse struct {
 func (p *HTTPProvider) Review(ctx context.Context, systemPrompt, userPrompt string) (*ReviewResult, error) {
 	text, usage, truncated, err := p.generateRaw(ctx, systemPrompt, userPrompt)
 	if err != nil {
-		return nil, err
+		return nil, WithUsage(err, usage)
 	}
 
 	review, err := parseReviewJSON(text)
 	if err != nil {
-		return nil, fmt.Errorf("parsing model response: %w (raw: %s)", err, truncate(text, 500))
+		return nil, WithUsage(MarkBadAnswer(fmt.Errorf("parsing model response: %w (raw: %s)", err, truncate(text, 500))), usage)
 	}
 
 	review.Usage = usage
@@ -275,16 +275,16 @@ func (p *HTTPProvider) generateRaw(ctx context.Context, systemPrompt, userPrompt
 
 	var chatResp chatResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return "", nil, false, fmt.Errorf("parsing response JSON: %w (raw: %s)", err, truncateBytes(respBody, 500))
+		return "", nil, false, MarkBadAnswer(fmt.Errorf("parsing response JSON: %w (raw: %s)", err, truncateBytes(respBody, 500)))
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return "", nil, false, fmt.Errorf("empty response from model (no choices)")
+		return "", nil, false, MarkBadAnswer(fmt.Errorf("empty response from model (no choices)"))
 	}
 
 	text := chatResp.Choices[0].Message.Content
 	if text == "" {
-		return "", nil, false, fmt.Errorf("empty content in model response")
+		return "", chatResp.Usage.tokenUsage(), false, MarkBadAnswer(fmt.Errorf("empty content in model response"))
 	}
 
 	truncated := chatResp.Choices[0].FinishReason == "length"

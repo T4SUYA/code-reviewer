@@ -214,7 +214,7 @@ func TestRun_ConcurrentFailureSkipsOnlyThatChunk(t *testing.T) {
 	files := []string{"a.go", "b.go", "c.go"}
 	m := &funcModel{fn: func(prompt string) (*model.ReviewResult, error) {
 		if chunkOf(prompt, files) == "b.go" {
-			return nil, errors.New("answer could not be read")
+			return nil, model.MarkBadAnswer(errors.New("answer could not be read"))
 		}
 		return &model.ReviewResult{Findings: []model.Finding{findingFor(chunkOf(prompt, files))}}, nil
 	}}

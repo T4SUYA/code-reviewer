@@ -134,14 +134,14 @@ func (p *Provider) Review(ctx context.Context, systemPrompt, userPrompt string) 
 	}
 	text, usage, truncated, err := p.generateWithSchema(ctx, systemPrompt, userPrompt, schema)
 	if err != nil {
-		return nil, err
+		return nil, WithUsage(err, usage)
 	}
 
 	// Parse JSON response. The parser also reads fenced and prose-wrapped JSON,
 	// which a model may still return when no schema was sent.
 	review, err := parseReviewJSON(text)
 	if err != nil {
-		return nil, fmt.Errorf("parsing model response: %w (raw: %s)", err, truncate(text, 500))
+		return nil, WithUsage(MarkBadAnswer(fmt.Errorf("parsing model response: %w (raw: %s)", err, truncate(text, 500))), usage)
 	}
 
 	review.Usage = usage
@@ -201,7 +201,7 @@ func (p *Provider) generateWithSchema(ctx context.Context, systemPrompt, userPro
 
 	text := extractText(result)
 	if text == "" {
-		return "", nil, false, fmt.Errorf("empty response from model")
+		return "", UsageFromMetadata(result.UsageMetadata), false, MarkBadAnswer(fmt.Errorf("empty response from model"))
 	}
 
 	var truncated bool

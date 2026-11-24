@@ -101,7 +101,7 @@ func TestRun_LogsAChunkThatWasSplit(t *testing.T) {
 	files := []string{"a.go", "b.go"}
 	m := &funcModel{fn: func(prompt string) (*model.ReviewResult, error) {
 		if len(markersIn(prompt, files)) > 1 {
-			return nil, errors.New("too much")
+			return nil, model.MarkBadAnswer(errors.New("too much"))
 		}
 		return &model.ReviewResult{}, nil
 	}}

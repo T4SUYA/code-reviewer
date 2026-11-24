@@ -533,6 +533,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		reviewed:     reviewedFiles,
 		wantDigest:   wantDigest,
 
+		maxRecovery:     recoveryCallsFor(len(chunks)),
 		reviewedHunks:   make(map[string]int),
 		unreviewedPaths: make(map[string]bool),
 	}
@@ -541,7 +542,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 	// are merged in chunk order and the runtime budget is checked after each
 	// wave, so with the default of one chunk per wave the loop is sequential.
 	waveSize := max(r.cfg.ChunkConcurrency, 1)
-	for start := 0; start < len(chunks) && !budgetExceeded; start += waveSize {
+	for start := 0; start < len(chunks) && !budgetExceeded && !run.tripped; start += waveSize {
 		end := min(start+waveSize, len(chunks))
 
 		userPrompts := make([]string, 0, end-start)
@@ -574,6 +575,9 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			budgetExceeded = true
 		}
 	}
+	for i := chunksRun; run.tripped && i < len(chunks); i++ {
+		run.skip(chunks[i], SkipModelError)
+	}
 	if err := run.failure(); err != nil {
 		return 0, err
 	}
@@ -601,8 +605,8 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			alreadySkipped[s.Path] = true
 		}
 		for _, d := range diffs {
-			if !reviewedFiles[d.NewPath] && !alreadySkipped[d.NewPath] {
-				skippedFiles = append(skippedFiles, d.NewPath)
+			if !reviewedFiles[diffPath(d)] && !alreadySkipped[diffPath(d)] {
+				skippedFiles = append(skippedFiles, diffPath(d))
 			}
 		}
 	}
@@ -687,7 +691,7 @@ skipAgent:
 		}
 
 		for _, d := range diffs { // diffs now holds only uncached
-			if !reviewedFiles[d.NewPath] {
+			if !reviewedFiles[diffPath(d)] {
 				continue
 			}
 			if key, ok := cacheKeys[d.NewPath]; ok {
