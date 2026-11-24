@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/OpticDiff/code-reviewer/internal/diff"
 	"github.com/OpticDiff/code-reviewer/internal/model"
@@ -49,6 +50,38 @@ type chunkRun struct {
 	wantDigest bool
 	// firstErr is the first call error that was set aside.
 	firstErr error
+}
+
+// chunkMark is the state of a chunkRun before a chunk is settled.
+type chunkMark struct {
+	findings, split, unreviewed int
+}
+
+func (c *chunkRun) snapshot() chunkMark {
+	return chunkMark{findings: len(c.findings), split: c.split, unreviewed: len(c.unreviewed)}
+}
+
+// logChunkFinished logs, at info level, that a chunk of the review is done:
+// its position, files, how long it took (calls and any retries in parts), the
+// findings it added and how it ended. A chunk that was cut in parts reports
+// "split" and, when part of it could not be reviewed, "skipped_files".
+func (c *chunkRun) logChunkFinished(index, of int, chunk []diff.FileDiff, before chunkMark, took time.Duration) {
+	outcome := "reviewed"
+	switch {
+	case len(c.unreviewed) > before.unreviewed && c.split == before.split:
+		outcome = "skipped"
+	case c.split > before.split:
+		outcome = "split"
+	}
+	slog.Info("chunk finished",
+		"chunk", index,
+		"of", of,
+		"files", len(chunk),
+		"duration_ms", took.Milliseconds(),
+		"findings", len(c.findings)-before.findings,
+		"outcome", outcome,
+		"skipped_files", len(c.unreviewed)-before.unreviewed,
+	)
 }
 
 // settle takes the outcome of one model call for chunk and either records it

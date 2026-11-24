@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/OpticDiff/code-reviewer/internal/diff"
 	"github.com/OpticDiff/code-reviewer/internal/model"
@@ -80,9 +81,10 @@ func (r *Reviewer) crossChunkFindings(ctx context.Context, title string, digests
 	}
 
 	slog.Info("cross-chunk step started", "chunks", len(digests), "findings_so_far", len(found), "estimated_tokens", estimate)
+	started := time.Now()
 	result, err := r.provider.Review(ctx, system, user)
 	if err != nil {
-		slog.Warn("cross-chunk step failed, keeping the chunk findings", "error", err)
+		slog.Warn("cross-chunk step failed, keeping the chunk findings", "error", err, "duration_ms", time.Since(started).Milliseconds())
 		return nil, nil
 	}
 	if result.Truncated {
@@ -94,7 +96,7 @@ func (r *Reviewer) crossChunkFindings(ctx context.Context, title string, digests
 		f.Origin = pkgmodel.OriginCrossChunk
 		out[i] = f
 	}
-	slog.Info("cross-chunk step finished", "findings", len(out))
+	slog.Info("cross-chunk step finished", "findings", len(out), "duration_ms", time.Since(started).Milliseconds())
 	return out, result.Usage
 }
 

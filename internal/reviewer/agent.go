@@ -297,6 +297,7 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 		if i == cfg.MaxIterations-1 {
 			turnConfig = &finalConfig
 		}
+		iterStart := time.Now()
 		resp, err := chatter.Chat(ctx, history, turnConfig)
 		if err != nil {
 			result.StopReason = "error"
@@ -330,6 +331,14 @@ func RunAgentLoop(ctx context.Context, chatter Chatter, cfg AgentConfig,
 			result.StopReason = "error"
 			break
 		}
+
+		slog.Info("agent loop: iteration finished",
+			"iteration", i+1,
+			"of", cfg.MaxIterations,
+			"action", action.Action,
+			"duration_ms", time.Since(iterStart).Milliseconds(),
+			"tokens_used", totalUsage.TotalTokens,
+		)
 
 		switch action.Action {
 		case "tool":

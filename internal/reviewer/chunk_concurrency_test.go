@@ -79,7 +79,7 @@ func TestReviewWave_ResultsInChunkOrderWhateverFinishesFirst(t *testing.T) {
 	for i, f := range files {
 		prompts[i] = "marker:" + f
 	}
-	results, errs := r.reviewWave(context.Background(), "sys", prompts)
+	results, errs, _ := r.reviewWave(context.Background(), "sys", prompts)
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
@@ -110,7 +110,7 @@ func TestReviewWave_ReportsEachCallsOwnOutcome(t *testing.T) {
 	}}
 	r := &Reviewer{provider: m}
 
-	results, errs := r.reviewWave(context.Background(), "sys", []string{"p1", "p2", "p3", "p4"})
+	results, errs, _ := r.reviewWave(context.Background(), "sys", []string{"p1", "p2", "p3", "p4"})
 	if !errors.Is(errs[1], errSecond) || !errors.Is(errs[3], errFourth) || errs[0] != nil || errs[2] != nil {
 		t.Fatalf("errs = %v, want only the second and fourth calls to fail", errs)
 	}

@@ -552,12 +552,15 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			userPrompts = append(userPrompts, promptFor(chunk))
 		}
 
-		results, errs := r.reviewWave(ctx, systemPrompt, userPrompts)
+		results, errs, took := r.reviewWave(ctx, systemPrompt, userPrompts)
 		for j := range results {
 			i := start + j
+			settleStart := time.Now()
+			before := run.snapshot()
 			if err := run.settle(ctx, chunks[i], fmt.Sprint(i+1), results[j], errs[j]); err != nil {
 				return 0, err
 			}
+			run.logChunkFinished(i+1, len(chunks), chunks[i], before, took[j]+time.Since(settleStart))
 		}
 		chunksRun = end
 
