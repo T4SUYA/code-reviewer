@@ -526,6 +526,9 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		promptFor:    promptFor,
 		usage:        &totalUsage,
 		reviewed:     reviewedFiles,
+
+		reviewedHunks:   make(map[string]int),
+		unreviewedPaths: make(map[string]bool),
 	}
 
 	// Chunks are reviewed in waves of up to ChunkConcurrency at once. Results
@@ -1085,7 +1088,12 @@ func buildNumberedDiff(diffs []diff.FileDiff) string {
 		if path == "" {
 			path = d.OldPath
 		}
-		fmt.Fprintf(&sb, "=== File: %s ===\n", path)
+		if d.Part != nil {
+			fmt.Fprintf(&sb, "=== File: %s (%s) ===\n", path, d.Part.Label())
+			fmt.Fprintf(&sb, "This is %s of the changes to this file; the other parts are reviewed in separate requests. Line numbers are those of the whole file.\n", d.Part.Label())
+		} else {
+			fmt.Fprintf(&sb, "=== File: %s ===\n", path)
+		}
 
 		for _, h := range d.Hunks {
 			sb.WriteString(h.Header + "\n")

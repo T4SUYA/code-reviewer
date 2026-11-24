@@ -21,6 +21,10 @@ type FileDiff struct {
 	// SkipReason, when non-empty, records why the platform supplied no
 	// reviewable patch for this file (e.g. "too_large").
 	SkipReason string
+	// Part is set when this value carries only some of the file's hunks, cut
+	// out by SplitFile or SplitChunk so a large file can be reviewed in pieces.
+	// Hunks keep the line numbers of the real file.
+	Part *FilePart
 }
 
 // LineCount returns the total number of added+removed lines in this file diff.

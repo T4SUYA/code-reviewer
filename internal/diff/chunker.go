@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -59,7 +60,9 @@ type SplitStrategy struct {
 // wherever they are packed (see packageDir and stemOf). The result depends on
 // the set of files only; the groups are ordered by the position of their
 // first file in diffs, so a priority order of the input decides what is
-// reviewed first. A file larger than the target is a group of its own.
+// reviewed first. A file larger than the target is cut at hunk boundaries
+// into parts (see SplitFile) that are packed as files of their own; a hunk
+// larger than the target is a group of its own.
 func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, error) {
 	if len(diffs) == 0 {
 		return nil, nil
@@ -80,12 +83,15 @@ func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, e
 		if path == "" {
 			path = diffs[i].OldPath
 		}
-		root.insert(packageDir(path), &packItem{
-			diff:   diffs[i],
-			index:  i,
-			path:   path,
-			tokens: estimateFileDiffTokens(&diffs[i]),
-		})
+		dir := packageDir(path)
+		parts := SplitFile(diffs[i], effectiveLimit)
+		if parts == nil {
+			root.insert(dir, &packItem{diff: diffs[i], index: i, path: path, tokens: estimateFileDiffTokens(&diffs[i])})
+			continue
+		}
+		for k := range parts {
+			root.insert(dir, &packItem{diff: parts[k], index: i, part: k + 1, path: path, tokens: estimateFileDiffTokens(&parts[k])})
+		}
 	}
 	root.total()
 
@@ -109,15 +115,20 @@ func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, e
 		chunks = append(chunks, current)
 	}
 
-	// Review first what the input listed first.
-	first := func(c []*packItem) int {
-		m := c[0].index
+	// Review first what the input listed first; the parts of one file in order.
+	first := func(c []*packItem) [2]int {
+		m := [2]int{c[0].index, c[0].part}
 		for _, it := range c {
-			m = min(m, it.index)
+			if k := [2]int{it.index, it.part}; k[0] < m[0] || (k[0] == m[0] && k[1] < m[1]) {
+				m = k
+			}
 		}
 		return m
 	}
-	sort.SliceStable(chunks, func(i, j int) bool { return first(chunks[i]) < first(chunks[j]) })
+	sort.SliceStable(chunks, func(i, j int) bool {
+		a, b := first(chunks[i]), first(chunks[j])
+		return a[0] < b[0] || (a[0] == b[0] && a[1] < b[1])
+	})
 
 	out := make([][]FileDiff, len(chunks))
 	for i, c := range chunks {
@@ -133,6 +144,7 @@ func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, e
 type packItem struct {
 	diff   FileDiff
 	index  int // Position in the input.
+	part   int // 1-based part number of a file cut by hunks; 0 for a whole file.
 	path   string
 	tokens int
 }
@@ -223,7 +235,10 @@ func sortItems(items []*packItem) {
 		if items[i].path != items[j].path {
 			return items[i].path < items[j].path
 		}
-		return items[i].index < items[j].index
+		if items[i].index != items[j].index {
+			return items[i].index < items[j].index
+		}
+		return items[i].part < items[j].part
 	})
 }
 
@@ -235,7 +250,11 @@ func packOwn(own []*packItem, limit int) [][]*packItem {
 	byStem := make(map[string][]*packItem)
 	var stems []string
 	for _, it := range own {
+		// The parts of a file are units of their own.
 		stem := stemOf(it.path)
+		if it.part > 0 {
+			stem += "\x00" + strconv.Itoa(it.part)
+		}
 		if _, ok := byStem[stem]; !ok {
 			stems = append(stems, stem)
 		}
@@ -258,7 +277,10 @@ func packOwn(own []*packItem, limit int) [][]*packItem {
 		if units[i].tokens != units[j].tokens {
 			return units[i].tokens > units[j].tokens
 		}
-		return units[i].items[0].path < units[j].items[0].path
+		if a, b := units[i].items[0], units[j].items[0]; a.path != b.path {
+			return a.path < b.path
+		}
+		return units[i].items[0].part < units[j].items[0].part
 	})
 
 	type bin struct {
@@ -288,7 +310,12 @@ func packOwn(own []*packItem, limit int) [][]*packItem {
 		out[i] = b.items
 	}
 	// Keep a stable order between the groups of one directory.
-	sort.SliceStable(out, func(i, j int) bool { return out[i][0].path < out[j][0].path })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i][0].path != out[j][0].path {
+			return out[i][0].path < out[j][0].path
+		}
+		return out[i][0].part < out[j][0].part
+	})
 	return out
 }
 
@@ -379,13 +406,20 @@ func EstimateTokens(diffs []FileDiff) int {
 
 func estimateFileDiffTokens(d *FileDiff) int {
 	chars := len(d.OldPath) + len(d.NewPath)
-	for _, h := range d.Hunks {
-		chars += len(h.Header)
-		for _, l := range h.Lines {
-			chars += len(l.Content) + 2 // +2 for prefix and newline
-		}
+	for i := range d.Hunks {
+		chars += hunkChars(&d.Hunks[i])
 	}
 	return chars / 4 // ~4 chars per token
+}
+
+// hunkChars is the size of a hunk in characters, as estimateFileDiffTokens
+// counts it.
+func hunkChars(h *Hunk) int {
+	chars := len(h.Header)
+	for _, l := range h.Lines {
+		chars += len(l.Content) + 2 // +2 for prefix and newline
+	}
+	return chars
 }
 
 // ModelTokenLimits maps known model names to their approximate context window sizes.
@@ -467,9 +501,17 @@ func NewChunkStrategyWithTarget(name string, targetTokens int) (ChunkStrategy, e
 
 // SplitChunk cuts a chunk into two parts of about equal estimated size, in
 // input order, so files that were packed together stay together. Neither part
-// is empty. It returns nil for a chunk that cannot be cut: fewer than two
-// files.
+// is empty. A chunk of one file is cut at a hunk boundary into two parts of
+// that file (see SplitFile). It returns nil for a chunk that cannot be cut: no
+// files, or a single file of one hunk.
 func SplitChunk(chunk []FileDiff) [][]FileDiff {
+	if len(chunk) == 1 {
+		halves := splitFileInHalf(chunk[0])
+		if halves == nil {
+			return nil
+		}
+		return [][]FileDiff{{halves[0]}, {halves[1]}}
+	}
 	if len(chunk) < 2 {
 		return nil
 	}

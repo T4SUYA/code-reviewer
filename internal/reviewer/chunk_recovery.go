@@ -26,8 +26,14 @@ type chunkRun struct {
 
 	summaries []string
 	findings  []model.Finding
-	// reviewed holds the paths of files whose review completed.
+	// reviewed holds the paths of files whose review completed. A file cut into
+	// parts is in it once the hunks of its reviewed parts add up to the file's.
 	reviewed map[string]bool
+	// reviewedHunks counts, per file cut into parts, the hunks of the parts
+	// reviewed so far.
+	reviewedHunks map[string]int
+	// unreviewedPaths holds the files with a part or the whole not reviewed.
+	unreviewedPaths map[string]bool
 	// unreviewed lists files that were in scope and not reviewed.
 	unreviewed []SkippedFile
 	// truncated is set when an answer cut off by the output limit could not be
@@ -104,19 +110,35 @@ func (c *chunkRun) settleFloor(chunk []diff.FileDiff, result *model.ReviewResult
 // accept records a complete answer.
 func (c *chunkRun) accept(chunk []diff.FileDiff, result *model.ReviewResult) {
 	for _, d := range chunk {
-		c.reviewed[d.NewPath] = true
+		if c.unreviewedPaths[d.NewPath] {
+			continue
+		}
+		if d.Part == nil {
+			c.reviewed[d.NewPath] = true
+			continue
+		}
+		c.reviewedHunks[d.NewPath] += len(d.Hunks)
+		if c.reviewedHunks[d.NewPath] >= d.Part.TotalHunks {
+			c.reviewed[d.NewPath] = true
+		}
 	}
 	c.summaries = append(c.summaries, result.Summary)
 	c.findings = append(c.findings, result.Findings...)
 }
 
-// skip records the files of chunk as not reviewed.
+// skip records the files of chunk as not reviewed. A file is listed once, with
+// the reason of its first part that failed, and is never counted as reviewed.
 func (c *chunkRun) skip(chunk []diff.FileDiff, reason string) {
 	for _, d := range chunk {
 		path := d.NewPath
 		if path == "" {
 			path = d.OldPath
 		}
+		delete(c.reviewed, d.NewPath)
+		if c.unreviewedPaths[path] {
+			continue
+		}
+		c.unreviewedPaths[path] = true
 		c.unreviewed = append(c.unreviewed, SkippedFile{Path: path, Reason: reason})
 	}
 }
