@@ -27,3 +27,7 @@ func FindingsMatch(a, b Finding) bool {
 // OriginAgentExplore is the Finding.Origin of a finding the agent loop added
 // in explore mode. Findings from the review pass have no origin.
 const OriginAgentExplore = "agent_explore"
+
+// OriginCrossChunk is the Finding.Origin of a finding the cross-chunk step
+// added: one that spans chunks of a review.
+const OriginCrossChunk = "cross_chunk"

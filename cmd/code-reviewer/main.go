@@ -107,6 +107,9 @@ func vertexProviderOptions(cfg *config.Config) []func(*model.Provider) {
 	}
 	if useResponseSchema(cfg) {
 		opts = append(opts, (*model.Provider).EnableResponseSchema)
+		if cfg.CrossChunkReview {
+			opts = append(opts, (*model.Provider).EnableDigestSchema)
+		}
 	}
 	return opts
 }
@@ -145,6 +148,7 @@ func run(ctx, initCtx context.Context) (int, error) {
 		"chunk_target_tokens", cfg.ChunkTargetTokens,
 		"chunk_concurrency", cfg.ChunkConcurrency,
 		"local_diff", !cfg.DisableLocalDiff,
+		"cross_chunk_review", cfg.CrossChunkReview,
 		"auto_fix_remote", cfg.AutoFixRemote,
 		"dry_run", cfg.DryRun,
 		"proxy_enabled", cfg.ProxyURL != "",

@@ -118,6 +118,10 @@ chunk_strategy: fail
 # 1 or unset reviews one chunk at a time.
 # chunk_concurrency: 4
 
+# After a review that ran in more than one chunk, send one more request with a
+# digest of every chunk to find problems that span chunks (default false).
+# cross_chunk_review: true
+
 # Produce the patch of a file the platform withheld (too large, collapsed,
 # incomplete) with git when the checkout holds both commits (default true).
 # false reports such files as not reviewed.

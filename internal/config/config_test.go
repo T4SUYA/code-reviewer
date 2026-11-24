@@ -1791,6 +1791,53 @@ func TestLoad_LocalDiff(t *testing.T) {
 	}
 }
 
+// TestLoad_CrossChunkReview verifies cross_chunk_review is off by default and
+// can be turned on from YAML, env and flag with the usual precedence.
+func TestLoad_CrossChunkReview(t *testing.T) {
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+
+	tests := []struct {
+		name string
+		yaml string
+		env  string
+		args []string
+		want bool
+	}{
+		{name: "off by default", args: []string{"--diff"}},
+		{name: "yaml true enables", yaml: "cross_chunk_review: true\n", args: []string{"--diff"}, want: true},
+		{name: "env true enables", env: "true", args: []string{"--diff"}, want: true},
+		{name: "invalid env is ignored", env: "maybe", args: []string{"--diff"}},
+		{name: "flag enables", args: []string{"--diff", "--cross-chunk-review"}, want: true},
+		{name: "flag false overrides env true", env: "true", args: []string{"--diff", "--cross-chunk-review=false"}},
+		{name: "env false overrides yaml true", yaml: "cross_chunk_review: true\n", env: "false", args: []string{"--diff"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			yaml := tt.yaml
+			if yaml == "" {
+				yaml = "model: some-model\n"
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".code-reviewer.yaml"), []byte(yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
+			os.Args = append([]string{"code-reviewer"}, tt.args...)
+			t.Setenv("REVIEW_CROSS_CHUNK_REVIEW", tt.env)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.CrossChunkReview != tt.want {
+				t.Errorf("CrossChunkReview = %v, want %v", cfg.CrossChunkReview, tt.want)
+			}
+		})
+	}
+}
+
 // TestReviewSeverities_AreTheAcceptedSeverities keeps the severity enum of the
 // review response schema equal to the set ParseSeverity accepts.
 func TestReviewSeverities_AreTheAcceptedSeverities(t *testing.T) {

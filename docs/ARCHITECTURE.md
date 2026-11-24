@@ -463,6 +463,7 @@ temperature: 0
 use_temperature: true
 response_schema: true
 local_diff: true
+cross_chunk_review: false
 prompt_profile: precision
 thinking_level: high
 max_tokens: 500000
@@ -480,6 +481,7 @@ api_url: http://localhost:11434/v1
 | `REVIEW_USE_TEMPERATURE` | `DisableTemperature` (inverted) |
 | `REVIEW_RESPONSE_SCHEMA` | `DisableResponseSchema` (inverted) |
 | `REVIEW_LOCAL_DIFF` | `DisableLocalDiff` (inverted) |
+| `REVIEW_CROSS_CHUNK_REVIEW` | `CrossChunkReview` |
 | `REVIEW_FOCUS` | `Focus` (comma-separated) |
 | `REVIEW_CONTEXT_FILES` | `ContextFiles` (comma-separated) |
 | `REVIEW_MIN_SEVERITY` | `MinSeverity` |

@@ -505,6 +505,11 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		slog.Warn("prompt_profile recall with a confidence floor of 80 or more keeps almost only high-confidence findings; lower confidence_floor (for example 50) to benefit from recall", "confidence_floor", r.cfg.ConfidenceFloor)
 	}
 	systemPrompt = model.WithConfidenceFloor(systemPrompt, r.cfg.ConfidenceFloor)
+	// With the cross-chunk step on, chunks are also asked for a digest.
+	wantDigest := r.cfg.CrossChunkReview && len(chunks) > 1
+	if wantDigest {
+		systemPrompt += model.DigestInstructions
+	}
 	var summary string
 
 	budgetExceeded := false
@@ -526,6 +531,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		promptFor:    promptFor,
 		usage:        &totalUsage,
 		reviewed:     reviewedFiles,
+		wantDigest:   wantDigest,
 
 		reviewedHunks:   make(map[string]int),
 		unreviewedPaths: make(map[string]bool),
@@ -569,6 +575,18 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	allFindings = append(allFindings, run.findings...)
+	if wantDigest && !budgetExceeded && ctx.Err() == nil {
+		var remaining int64
+		if r.cfg.MaxTokens > 0 {
+			remaining = int64(r.cfg.MaxTokens) - totalUsage.TotalTokens
+			if remaining <= 0 {
+				remaining = 1
+			}
+		}
+		cross, usage := r.crossChunkFindings(ctx, mrTitle, run.digests, allFindings, auditDiffs, tokenLimit, remaining)
+		totalUsage.Add(usage)
+		allFindings = append(allFindings, cross...)
+	}
 	chunksSplit = run.split
 	reviewSkipped = run.unreviewed
 	anyTruncated = run.truncated

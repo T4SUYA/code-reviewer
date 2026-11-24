@@ -1,11 +1,16 @@
 package model
 
+import "strings"
+
 // ReviewResult holds the parsed model response.
 type ReviewResult struct {
 	Summary   string      `json:"summary"`
 	Findings  []Finding   `json:"findings"`
 	Usage     *TokenUsage `json:"usage,omitempty"`
 	Truncated bool        `json:"truncated,omitempty"`
+	// Digest is what a chunk review reports about its own part of the change,
+	// when it was asked to. The reviewer reads it and does not output it.
+	Digest *ChunkDigest `json:"digest,omitempty"`
 
 	// Chunks is the number of chunks the review ran in, and ChunksSplit how
 	// many of them were cut in halves and reviewed again after a failed or
@@ -76,4 +81,60 @@ func (u *TokenUsage) Add(other *TokenUsage) {
 	u.OutputTokens += other.OutputTokens
 	u.ThinkingTokens += other.ThinkingTokens
 	u.TotalTokens += other.TotalTokens
+}
+
+// Limits on a ChunkDigest, applied by Bounded.
+const (
+	// MaxDigestEntries is the most entries kept in each list of a digest.
+	MaxDigestEntries = 15
+	// MaxDigestEntryChars is the longest entry kept, in characters.
+	MaxDigestEntryChars = 160
+)
+
+// ChunkDigest summarises what one chunk of a review changes, for the step that
+// looks for problems across chunks: public symbols added, removed and changed,
+// and the contracts (interfaces, schemas, formats, behaviour) the chunk
+// touches.
+type ChunkDigest struct {
+	// Files are the files of the chunk; the reviewer sets them.
+	Files            []string `json:"files,omitempty"`
+	SymbolsAdded     []string `json:"symbols_added,omitempty"`
+	SymbolsRemoved   []string `json:"symbols_removed,omitempty"`
+	SymbolsChanged   []string `json:"symbols_changed,omitempty"`
+	ContractsTouched []string `json:"contracts_touched,omitempty"`
+}
+
+// Bounded returns a copy of d with every list cut to MaxDigestEntries entries
+// and every entry flattened to one line of at most MaxDigestEntryChars
+// characters, so a chatty or hostile model cannot grow the next prompt.
+func (d ChunkDigest) Bounded() ChunkDigest {
+	bound := func(in []string) []string {
+		var out []string
+		for _, s := range in {
+			s = strings.Join(strings.Fields(s), " ")
+			if s == "" {
+				continue
+			}
+			if r := []rune(s); len(r) > MaxDigestEntryChars {
+				s = string(r[:MaxDigestEntryChars]) + "…"
+			}
+			out = append(out, s)
+			if len(out) == MaxDigestEntries {
+				break
+			}
+		}
+		return out
+	}
+	return ChunkDigest{
+		Files:            d.Files,
+		SymbolsAdded:     bound(d.SymbolsAdded),
+		SymbolsRemoved:   bound(d.SymbolsRemoved),
+		SymbolsChanged:   bound(d.SymbolsChanged),
+		ContractsTouched: bound(d.ContractsTouched),
+	}
+}
+
+// Empty reports whether the digest lists nothing.
+func (d ChunkDigest) Empty() bool {
+	return len(d.SymbolsAdded)+len(d.SymbolsRemoved)+len(d.SymbolsChanged)+len(d.ContractsTouched) == 0
 }

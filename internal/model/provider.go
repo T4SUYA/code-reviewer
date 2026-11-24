@@ -18,6 +18,7 @@ type TokenUsage = pkgmodel.TokenUsage
 type ReviewResult = pkgmodel.ReviewResult
 type Finding = pkgmodel.Finding
 type SkippedFile = pkgmodel.SkippedFile
+type ChunkDigest = pkgmodel.ChunkDigest
 
 // Provider wraps the Vertex AI genai client for code review.
 type Provider struct {
@@ -27,6 +28,7 @@ type Provider struct {
 	omitTemp    bool                  // true = send no temperature; the model's own default applies.
 	thinking    *genai.ThinkingConfig // nil = send no thinking config.
 	schema      bool                  // true = the review call carries ReviewResponseSchema.
+	digest      bool                  // true = that schema also allows a chunk digest.
 }
 
 // defaultTemperature is the sampling temperature used for review calls
@@ -45,6 +47,10 @@ func (p *Provider) OmitTemperature() { p.omitTemp = true }
 // The summary and explain calls never carry it. Leave it off when the system
 // prompt defines a different output shape, such as a custom prompt does.
 func (p *Provider) EnableResponseSchema() { p.schema = true }
+
+// EnableDigestSchema makes the response schema, when one is sent, also allow
+// the optional chunk digest. Without a schema it changes nothing.
+func (p *Provider) EnableDigestSchema() { p.digest = true }
 
 // SetThinkingLevel makes every request carry a ThinkingConfig with the given
 // level (minimal, low, medium, high or xhigh, case-insensitive). An empty or
@@ -122,6 +128,9 @@ func (p *Provider) Review(ctx context.Context, systemPrompt, userPrompt string) 
 	var schema *genai.Schema
 	if p.schema {
 		schema = ReviewResponseSchema()
+		if p.digest {
+			schema = ReviewResponseSchemaWithDigest()
+		}
 	}
 	text, usage, truncated, err := p.generateWithSchema(ctx, systemPrompt, userPrompt, schema)
 	if err != nil {

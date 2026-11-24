@@ -43,6 +43,10 @@ type chunkRun struct {
 	split int
 	// succeeded counts the model calls that returned a complete answer.
 	succeeded int
+	// digests holds what the chunks that were asked for one reported.
+	digests []model.ChunkDigest
+	// wantDigest is set when the chunks were asked for a digest.
+	wantDigest bool
 	// firstErr is the first call error that was set aside.
 	firstErr error
 }
@@ -124,6 +128,11 @@ func (c *chunkRun) accept(chunk []diff.FileDiff, result *model.ReviewResult) {
 	}
 	c.summaries = append(c.summaries, result.Summary)
 	c.findings = append(c.findings, result.Findings...)
+	if c.wantDigest {
+		if d, ok := crossChunkDigestFor(chunk, result); ok {
+			c.digests = append(c.digests, d)
+		}
+	}
 }
 
 // skip records the files of chunk as not reviewed. A file is listed once, with
