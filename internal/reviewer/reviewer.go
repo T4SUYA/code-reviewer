@@ -1020,14 +1020,25 @@ func (r *Reviewer) getCIDiffs(ctx context.Context) ([]diff.FileDiff, string, str
 	}
 
 	// Files the platform withheld are diffed with git when the checkout holds
-	// both commits. The check runs at most once, on the first such file.
+	// both commits. The check runs at most once, on the first such file. A
+	// patch made this way must fit one chunk (split) or the model limit with
+	// everything else (fail); otherwise the file stays skipped as before.
 	var local *localDiffer
 	localChecked := false
+	limit, perFile, failStrategy := r.localDiffLimits()
+	used := 0
+	if failStrategy {
+		for _, change := range mr.Changes {
+			if !withheld(change) {
+				used += (len(change.OldPath) + len(change.NewPath) + len(change.Diff)) / 4
+			}
+		}
+	}
 
 	// Parse each file's diff.
 	var diffs []diff.FileDiff
 	for _, change := range mr.Changes {
-		if !r.cfg.DisableLocalDiff && (change.Incomplete || change.TooLarge || change.Collapsed) &&
+		if !r.cfg.DisableLocalDiff && withheld(change) &&
 			len(diff.Filter([]diff.FileDiff{{OldPath: change.OldPath, NewPath: change.NewPath}}, r.cfg.ExcludedPatterns)) > 0 {
 			if !localChecked {
 				localChecked = true
@@ -1035,13 +1046,27 @@ func (r *Reviewer) getCIDiffs(ctx context.Context) ([]diff.FileDiff, string, str
 				if base == "" {
 					base = r.cfg.CIDiffBaseSHA
 				}
-				local = newLocalDiffer(ctx, findRepoRoot(), base, mr.HeadSHA)
+				var why string
+				local, why = newLocalDiffer(ctx, findRepoRoot(), base, mr.HeadSHA)
+				if local == nil {
+					slog.Info("local diff unavailable", "reason", why, "effect", "files the platform withheld stay unreviewed")
+				}
 			}
 			if local != nil {
 				if patch, ok := local.patch(ctx, change.OldPath, change.NewPath); ok {
-					slog.Info("diffed a file the platform withheld from the local checkout", "file", change.NewPath)
-					change.Diff = patch
-					change.Incomplete, change.TooLarge, change.Collapsed = false, false, false
+					tokens := (len(change.OldPath) + len(change.NewPath) + len(patch)) / 4
+					room := perFile
+					if failStrategy {
+						room = min(perFile, limit-used)
+					}
+					if tokens > room {
+						slog.Info("local diff not used: the patch does not fit the review", "file", change.NewPath, "estimated_tokens", tokens, "room", room)
+					} else {
+						slog.Info("diffed a file the platform withheld from the local checkout", "file", change.NewPath)
+						used += tokens
+						change.Diff = patch
+						change.Incomplete, change.TooLarge, change.Collapsed = false, false, false
+					}
 				}
 			}
 		}
@@ -1587,4 +1612,22 @@ func reviewCacheModelID(cfg *config.Config) string {
 		id += ":version=" + cfg.Version
 	}
 	return id
+}
+
+// withheld reports whether the platform did not supply this file's patch.
+func withheld(c vcs.DiffEntry) bool { return c.Incomplete || c.TooLarge || c.Collapsed }
+
+// localDiffLimits returns what a locally produced patch may take: limit is the
+// model's context limit, perFile the most one file may add (what fits one
+// chunk under the split strategy, the whole limit under fail), and failStrategy
+// whether all files must fit the limit together, as the fail strategy needs.
+func (r *Reviewer) localDiffLimits() (limit, perFile int, failStrategy bool) {
+	limit = r.cfg.TokenLimit
+	if limit <= 0 {
+		limit = diff.TokenLimitForModel(r.cfg.Model)
+	}
+	if r.cfg.ChunkStrategy == config.ChunkStrategySplit {
+		return limit, diff.SplitTarget(limit, r.cfg.ChunkTargetTokens), false
+	}
+	return limit, limit, true
 }

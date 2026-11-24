@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/OpticDiff/code-reviewer/internal/config"
+	"github.com/OpticDiff/code-reviewer/internal/diff"
 	"github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/vcs"
 )
@@ -152,7 +153,7 @@ func TestRun_LocalDiffLeavesExcludedFilesAlone(t *testing.T) {
 func TestLocalDiffer_PathsAreArgumentsNotShellText(t *testing.T) {
 	dir, base, head := repoWithChange(t)
 	marker := filepath.Join(t.TempDir(), "pwned")
-	l := newLocalDiffer(context.Background(), dir, base, head)
+	l, _ := newLocalDiffer(context.Background(), dir, base, head)
 	if l == nil {
 		t.Fatal("no local differ for a checkout holding both commits")
 	}
@@ -176,14 +177,190 @@ func TestNewLocalDiffer_RejectsBadCommits(t *testing.T) {
 		{"empty", "", head}, {"flag", "-p", head}, {"unknown", strings.Repeat("0", 40), head},
 		{"not hex", "HEAD~1", head}, {"missing head", base, strings.Repeat("f", 40)},
 	} {
-		if l := newLocalDiffer(context.Background(), dir, tt.base, tt.head); l != nil {
+		if l, _ := newLocalDiffer(context.Background(), dir, tt.base, tt.head); l != nil {
 			t.Errorf("%s: got a differ", tt.name)
 		}
 	}
-	if l := newLocalDiffer(context.Background(), "", base, head); l != nil {
+	if l, _ := newLocalDiffer(context.Background(), "", base, head); l != nil {
 		t.Error("got a differ without a repository")
 	}
-	if l := newLocalDiffer(context.Background(), t.TempDir(), base, head); l != nil {
+	if l, _ := newLocalDiffer(context.Background(), t.TempDir(), base, head); l != nil {
 		t.Error("got a differ outside a repository")
+	}
+}
+
+// repoWithPathspecNames changes files whose names are git pathspec syntax,
+// next to an ordinary one and one that must stay out of the review.
+func repoWithPathspecNames(t *testing.T) (dir, base, head string) {
+	t.Helper()
+	dir = t.TempDir()
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	for _, n := range []string{"*", "[id]", ":(exclude)x", "other.go", "secret.go"} {
+		writeRepoFile(t, dir, n, numberedLines(5, "old"))
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "base")
+	base = gitIn(t, dir, "rev-parse", "HEAD")
+	for _, n := range []string{"*", "[id]", ":(exclude)x", "other.go", "secret.go"} {
+		writeRepoFile(t, dir, n, numberedLines(5, "new "+n))
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "head")
+	head = gitIn(t, dir, "rev-parse", "HEAD")
+	return dir, base, head
+}
+
+// A path is a literal file name, never a pathspec: a file called "*" does not
+// pull in the diffs of other files.
+func TestLocalDiffer_PathsAreLiteralNotPathspecs(t *testing.T) {
+	dir, base, head := repoWithPathspecNames(t)
+	l, why := newLocalDiffer(context.Background(), dir, base, head)
+	if l == nil {
+		t.Fatalf("no differ: %s", why)
+	}
+	for _, name := range []string{"*", "[id]", ":(exclude)x"} {
+		patch, ok := l.patch(context.Background(), name, name)
+		if !ok {
+			t.Errorf("%q: no patch", name)
+			continue
+		}
+		if !strings.Contains(patch, "new "+name) {
+			t.Errorf("%q: patch lacks its own change:\n%s", name, patch)
+		}
+		for _, other := range []string{"other.go", "secret.go"} {
+			if strings.Contains(patch, "new "+other) {
+				t.Errorf("%q: patch holds the diff of %s:\n%s", name, other, patch)
+			}
+		}
+		if strings.Count(patch, "@@") > 2 {
+			t.Errorf("%q: patch holds more than its own hunk:\n%s", name, patch)
+		}
+	}
+	// A glob that names nothing literal gives nothing.
+	if patch, ok := l.patch(context.Background(), "*.go", "*.go"); ok {
+		t.Errorf("a glob matched files: %s", patch)
+	}
+}
+
+func TestRun_WithheldFileNamedLikeAGlobDoesNotLeakExcludedFiles(t *testing.T) {
+	dir, base, head := repoWithPathspecNames(t)
+	t.Chdir(dir)
+	cfg := localDiffCfg()
+	cfg.ExcludedPatterns = []string{"secret.go"}
+	mm := &mockModel{result: &model.ReviewResult{Summary: "ok"}}
+	mr := &vcs.MRChanges{BaseSHA: base, HeadSHA: head, Changes: []vcs.DiffEntry{
+		{OldPath: "*", NewPath: "*", TooLarge: true},
+	}}
+	if _, err := New(cfg, mm, &mockVCS{mrChanges: mr}).Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(mm.lastUserPrompt, "secret.go") || strings.Contains(mm.lastUserPrompt, "other.go") {
+		t.Errorf("another file's diff reached the model:\n%s", mm.lastUserPrompt)
+	}
+	if !strings.Contains(mm.lastUserPrompt, "new *") {
+		t.Errorf("the file itself was not reviewed:\n%s", mm.lastUserPrompt)
+	}
+}
+
+// The repository must hold both commits: a checkout of another repository is
+// not used.
+func TestNewLocalDiffer_RepositoryWithoutTheCommitsIsNotUsed(t *testing.T) {
+	_, base, head := repoWithChange(t)
+	other := t.TempDir()
+	gitIn(t, other, "init", "-q", "-b", "main")
+	writeRepoFile(t, other, "x.go", "x\n")
+	gitIn(t, other, "add", "-A")
+	gitIn(t, other, "commit", "-q", "-m", "x")
+	l, why := newLocalDiffer(context.Background(), other, base, head)
+	if l != nil || why == "" {
+		t.Errorf("differ = %v, reason %q; want none with a reason", l, why)
+	}
+}
+
+func hugeChange(t *testing.T) (dir, base, head string) {
+	t.Helper()
+	dir = t.TempDir()
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	writeRepoFile(t, dir, "gen.go", "x\n")
+	writeRepoFile(t, dir, "small.go", "x\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "base")
+	base = gitIn(t, dir, "rev-parse", "HEAD")
+	writeRepoFile(t, dir, "gen.go", numberedLines(4000, "generated line of some length to add up"))
+	writeRepoFile(t, dir, "small.go", "y\n")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "commit", "-q", "-m", "head")
+	head = gitIn(t, dir, "rev-parse", "HEAD")
+	return dir, base, head
+}
+
+// A locally produced patch never makes the run fail or swell the chunks: one
+// that does not fit stays skipped as the platform left it.
+func TestRun_LocalPatchLargerThanTheLimitStaysSkipped(t *testing.T) {
+	dir, base, head := hugeChange(t)
+	mr := func() *vcs.MRChanges {
+		return &vcs.MRChanges{BaseSHA: base, HeadSHA: head, Changes: []vcs.DiffEntry{
+			{OldPath: "gen.go", NewPath: "gen.go", TooLarge: true, Incomplete: true},
+			{OldPath: "small.go", NewPath: "small.go", Collapsed: true},
+		}}
+	}
+	tests := []struct {
+		name      string
+		configure func(c *config.Config)
+		wantGen   bool
+	}{
+		{"fail strategy, limit holds only the small file", func(c *config.Config) { c.TokenLimit = 3000 }, false},
+		{"fail strategy, limit holds both", func(c *config.Config) { c.TokenLimit = 1_000_000 }, true},
+		{"split strategy, chunk target below the patch", func(c *config.Config) {
+			c.ChunkStrategy = config.ChunkStrategySplit
+			c.TokenLimit = 1_000_000
+			c.ChunkTargetTokens = 3000
+		}, false},
+		{"split strategy, target holds the patch", func(c *config.Config) {
+			c.ChunkStrategy = config.ChunkStrategySplit
+			c.TokenLimit = 1_000_000
+			c.ChunkTargetTokens = 200_000
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(dir)
+			cfg := localDiffCfg()
+			cfg.Model = "test-local"
+			diff.ModelTokenLimits["test-local"] = 1_000_000
+			t.Cleanup(func() { delete(diff.ModelTokenLimits, "test-local") })
+			cfg.AuditLog = filepath.Join(t.TempDir(), "audit.jsonl")
+			tt.configure(cfg)
+			mm := &mockModel{result: &model.ReviewResult{Summary: "ok"}}
+			if _, err := New(cfg, mm, &mockVCS{mrChanges: mr()}).Run(context.Background()); err != nil {
+				t.Fatalf("Run failed: %v", err)
+			}
+			if got := strings.Contains(mm.lastUserPrompt, "=== File: gen.go"); got != tt.wantGen {
+				t.Errorf("gen.go reviewed = %v, want %v", got, tt.wantGen)
+			}
+			if !tt.wantGen {
+				skipped := map[string]string{}
+				for _, s := range readAudit(t, cfg.AuditLog).FilesSkippedDetail {
+					skipped[s.Path] = s.Reason
+				}
+				if skipped["gen.go"] == "" {
+					t.Errorf("gen.go not reported as skipped: %v", skipped)
+				}
+			}
+		})
+	}
+}
+
+func TestRun_LogsWhyLocalDiffIsUnavailable(t *testing.T) {
+	logs := captureLogs(t)
+	dir, base, _ := repoWithChange(t)
+	t.Chdir(dir)
+	mr := withheldChanges(base, strings.Repeat("a", 40))
+	if _, err := New(localDiffCfg(), &mockModel{result: &model.ReviewResult{}}, &mockVCS{mrChanges: mr}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recs := recordsWith(logs(), "local diff unavailable")
+	if len(recs) != 1 || recs[0]["reason"] == "" || recs[0]["reason"] == nil {
+		t.Errorf("records = %v, want one with a reason", recs)
 	}
 }

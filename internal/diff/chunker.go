@@ -49,6 +49,20 @@ type SplitStrategy struct {
 	TargetTokens int
 }
 
+// SplitTarget returns the size, in estimated tokens, that the split strategy
+// packs a chunk to: 80% of tokenLimit (the rest is left for the system prompt
+// and the response), or targetTokens when that is positive and smaller.
+func SplitTarget(tokenLimit, targetTokens int) int {
+	limit := int(float64(tokenLimit) * splitLimitFraction)
+	if limit <= 0 {
+		limit = tokenLimit
+	}
+	if targetTokens > 0 && targetTokens < limit {
+		limit = targetTokens
+	}
+	return limit
+}
+
 // Chunk splits diffs into groups that fit within tokenLimit.
 //
 // The files form a tree by directory. A directory whose whole subtree fits the
@@ -68,14 +82,7 @@ func (s *SplitStrategy) Chunk(diffs []FileDiff, tokenLimit int) ([][]FileDiff, e
 		return nil, nil
 	}
 
-	// Reserve ~20% of the limit for the system prompt and response.
-	effectiveLimit := int(float64(tokenLimit) * splitLimitFraction)
-	if effectiveLimit <= 0 {
-		effectiveLimit = tokenLimit
-	}
-	if s.TargetTokens > 0 && s.TargetTokens < effectiveLimit {
-		effectiveLimit = s.TargetTokens
-	}
+	effectiveLimit := SplitTarget(tokenLimit, s.TargetTokens)
 
 	root := &dirNode{}
 	for i := range diffs {

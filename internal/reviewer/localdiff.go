@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/OpticDiff/code-reviewer/internal/diff"
 )
 
 // maxLocalPatchBytes caps the patch read from git for one file, so a generated
@@ -26,28 +28,35 @@ type localDiffer struct {
 	head string
 }
 
-// newLocalDiffer returns a localDiffer for the repository at dir, or nil when
-// there is none: dir is empty or not a repository, a commit is not a plain
-// commit id, or the checkout does not hold both commits. Absence is not an
-// error; the caller then reports the files as not reviewed.
-func newLocalDiffer(ctx context.Context, dir, base, head string) *localDiffer {
-	if dir == "" || !commitSHA.MatchString(base) || !commitSHA.MatchString(head) {
-		return nil
+// newLocalDiffer returns a localDiffer for the repository at dir. It returns
+// nil and the reason when there is none: dir is empty or not a repository, a
+// commit is not a plain commit id, or the repository does not hold both
+// commits (another repository, a shallow clone that stops short). Absence is
+// not an error; the caller then reports the files as not reviewed.
+func newLocalDiffer(ctx context.Context, dir, base, head string) (*localDiffer, string) {
+	switch {
+	case dir == "":
+		return nil, "the working directory is not a git checkout"
+	case !commitSHA.MatchString(base) || !commitSHA.MatchString(head):
+		return nil, "the platform did not report the base and head commits"
 	}
 	l := &localDiffer{dir: dir, base: base, head: head}
 	for _, sha := range []string{base, head} {
 		if _, err := l.git(ctx, 1<<10, "cat-file", "-e", sha+"^{commit}"); err != nil {
-			slog.Debug("local diff unavailable: commit not in the checkout", "commit", sha, "error", err)
-			return nil
+			return nil, "commit " + sha[:min(len(sha), 12)] + " is not in the checkout (shallow clone or another repository)"
 		}
 	}
-	return l
+	return l, ""
 }
 
 // patch returns the hunks of the change to a file between the two commits, in
 // the shape the platforms' diffs API uses (starting at the first hunk header),
 // and whether there were any. A renamed file is named by both of its paths so
-// git pairs them. Paths are passed to git as arguments after "--".
+// git pairs them.
+//
+// Paths are literal file names: git runs with literal pathspecs, so a file
+// called "*" or "[id]" or ":(exclude)x" matches only itself, and only the
+// section of the output for the requested file is kept.
 func (l *localDiffer) patch(ctx context.Context, oldPath, newPath string) (string, bool) {
 	paths := []string{newPath}
 	if oldPath != "" && oldPath != newPath {
@@ -59,15 +68,17 @@ func (l *localDiffer) patch(ctx context.Context, oldPath, newPath string) (strin
 		slog.Debug("local diff failed", "file", newPath, "error", err)
 		return "", false
 	}
-	text := string(out)
-	if !strings.HasPrefix(text, "@@") {
-		_, rest, found := strings.Cut(text, "\n@@")
-		if !found {
-			return "", false // No hunks: unchanged, binary or mode-only.
-		}
-		text = "@@" + rest
+	files, err := diff.Parse(strings.NewReader(string(out)))
+	if err != nil {
+		slog.Debug("local diff could not be parsed", "file", newPath, "error", err)
+		return "", false
 	}
-	return text, true
+	for _, f := range files {
+		if f.NewPath == newPath && len(f.Hunks) > 0 {
+			return f.RawText(), true
+		}
+	}
+	return "", false // Unchanged, binary or mode-only, or not the file asked for.
 }
 
 // git runs git in the repository and returns at most limit bytes of its
@@ -75,7 +86,7 @@ func (l *localDiffer) patch(ctx context.Context, oldPath, newPath string) (strin
 // configuration cannot start an external diff program or a text conversion
 // filter, because the flags of patch disable both.
 func (l *localDiffer) git(ctx context.Context, limit int64, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.quotepath=off"}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--literal-pathspecs", "-c", "core.quotepath=off"}, args...)...)
 	cmd.Dir = l.dir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
