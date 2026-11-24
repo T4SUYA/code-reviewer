@@ -13,6 +13,7 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/OpticDiff/code-reviewer/internal/config"
+	"github.com/OpticDiff/code-reviewer/internal/diff"
 	"github.com/OpticDiff/code-reviewer/internal/model"
 )
 
@@ -453,5 +454,31 @@ func TestRun_BudgetStopsPartsAndTruncatedAnswerKeepsItsFindings(t *testing.T) {
 		if s.Reason != SkipBudget {
 			t.Errorf("%s skipped as %s, want budget", s.Path, s.Reason)
 		}
+	}
+}
+
+// A deleted file has no new path; it is tracked under its old path whether it
+// was reviewed or skipped.
+func TestChunkRun_DeletedFileIsTrackedUnderOneName(t *testing.T) {
+	gone := diff.FileDiff{OldPath: "gone.go", IsDelete: true}
+	newRun := func() *chunkRun {
+		return &chunkRun{reviewed: map[string]bool{}, reviewedHunks: map[string]int{}, unreviewedPaths: map[string]bool{}}
+	}
+
+	run := newRun()
+	run.accept([]diff.FileDiff{gone}, &model.ReviewResult{})
+	if !run.reviewed["gone.go"] || run.reviewed[""] {
+		t.Errorf("reviewed = %v, want gone.go only", run.reviewed)
+	}
+
+	run.skip([]diff.FileDiff{gone}, SkipModelError)
+	if run.reviewed["gone.go"] {
+		t.Error("a skipped deleted file is still counted as reviewed")
+	}
+	if len(run.unreviewed) != 1 || run.unreviewed[0].Path != "gone.go" {
+		t.Errorf("unreviewed = %v", run.unreviewed)
+	}
+	if diffPath(gone) != "gone.go" {
+		t.Errorf("diffPath = %q", diffPath(gone))
 	}
 }

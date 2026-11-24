@@ -39,9 +39,9 @@ func crossChunkDigestFor(chunk []diff.FileDiff, result *model.ReviewResult) (mod
 	}
 	seen := map[string]bool{}
 	for _, f := range chunk {
-		if !seen[f.NewPath] {
-			seen[f.NewPath] = true
-			d.Files = append(d.Files, f.NewPath)
+		if path := diffPath(f); !seen[path] {
+			seen[path] = true
+			d.Files = append(d.Files, path)
 		}
 	}
 	return d, true
