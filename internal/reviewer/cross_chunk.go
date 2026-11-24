@@ -65,11 +65,21 @@ func (r *Reviewer) crossChunkFindings(ctx context.Context, title string, digests
 		}
 		listed = append(listed, model.CrossChunkFinding{File: f.File, Line: f.Line, Severity: f.Severity, Title: f.Title})
 	}
-	ranges := make([]string, 0, len(diffs))
+	ranges := make([]model.CrossChunkFile, 0, len(diffs))
+	added := make(map[string]map[int]bool, len(diffs))
 	for _, d := range diffs {
 		if r := changedLineRanges(d); r != "" {
-			ranges = append(ranges, d.NewPath+": "+r)
+			ranges = append(ranges, model.CrossChunkFile{Path: d.NewPath, Ranges: r})
 		}
+		lines := make(map[int]bool)
+		for _, h := range d.Hunks {
+			for _, l := range h.Lines {
+				if l.Type == diff.LineAdded && l.NewLineNo > 0 {
+					lines[l.NewLineNo] = true
+				}
+			}
+		}
+		added[d.NewPath] = lines
 	}
 	system := model.BuildCrossChunkSystemPrompt()
 	user := model.BuildCrossChunkUserPrompt(title, digests, listed, ranges, tokenLimit/crossChunkPromptShare*4)
@@ -91,10 +101,14 @@ func (r *Reviewer) crossChunkFindings(ctx context.Context, title string, digests
 		slog.Warn("cross-chunk step response was truncated, discarding its findings")
 		return nil, result.Usage
 	}
-	out := make([]model.Finding, len(result.Findings))
-	for i, f := range result.Findings {
+	out := make([]model.Finding, 0, len(result.Findings))
+	for _, f := range result.Findings {
+		if !added[f.File][f.Line] {
+			slog.Info("cross-chunk step: dropping a finding outside the diff", "file", f.File, "line", f.Line, "title", f.Title)
+			continue
+		}
 		f.Origin = pkgmodel.OriginCrossChunk
-		out[i] = f
+		out = append(out, f)
 	}
 	slog.Info("cross-chunk step finished", "findings", len(out), "duration_ms", time.Since(started).Milliseconds())
 	return out, result.Usage

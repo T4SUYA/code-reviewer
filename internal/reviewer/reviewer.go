@@ -22,6 +22,7 @@ import (
 	"github.com/OpticDiff/code-reviewer/internal/mcp"
 	"github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/vcs"
+	pkgmodel "github.com/OpticDiff/code-reviewer/pkg/model"
 )
 
 // DiffSource provides diffs for review. Extracted for testability.
@@ -687,6 +688,9 @@ skipAgent:
 		// Group findings by file.
 		byFile := make(map[string][]model.Finding)
 		for _, f := range allFindings {
+			if f.Origin == pkgmodel.OriginCrossChunk {
+				continue // Depends on other files; not a property of this file's diff.
+			}
 			byFile[f.File] = append(byFile[f.File], f)
 		}
 

@@ -46,11 +46,19 @@ type CrossChunkFinding struct {
 	Title    string
 }
 
+// CrossChunkFile is a changed file and the ranges of its added lines, as the
+// cross-chunk step is shown them.
+type CrossChunkFile struct {
+	Path   string
+	Ranges string
+}
+
 // BuildCrossChunkUserPrompt renders the cross-chunk step's input: the title,
 // the digest of every chunk, the findings so far and the changed line ranges
-// (already rendered, one "file: ranges" per line). The output is cut at
+// . Every path and title is flattened to one line, so a name with a newline
+// cannot forge a section. The output is cut at
 // maxChars characters, at an entry boundary, with a note of what was left out.
-func BuildCrossChunkUserPrompt(title string, digests []ChunkDigest, findings []CrossChunkFinding, changedLines []string, maxChars int) string {
+func BuildCrossChunkUserPrompt(title string, digests []ChunkDigest, findings []CrossChunkFinding, changedLines []CrossChunkFile, maxChars int) string {
 	var sb strings.Builder
 	if title != "" {
 		fmt.Fprintf(&sb, "Title: %s\n\n", oneLine(title, 200))
@@ -61,7 +69,11 @@ func BuildCrossChunkUserPrompt(title string, digests []ChunkDigest, findings []C
 	omitted := 0
 	for i, d := range digests {
 		var part strings.Builder
-		fmt.Fprintf(&part, "Part %d (%s)\n", i+1, strings.Join(d.Files, ", "))
+		files := make([]string, len(d.Files))
+		for k, f := range d.Files {
+			files[k] = oneLine(f, 300)
+		}
+		fmt.Fprintf(&part, "Part %d (%s)\n", i+1, strings.Join(files, ", "))
 		for _, l := range []struct {
 			name  string
 			items []string
@@ -85,7 +97,7 @@ func BuildCrossChunkUserPrompt(title string, digests []ChunkDigest, findings []C
 		sb.WriteString("(none)\n")
 	}
 	for i, f := range findings {
-		line := fmt.Sprintf("%s:%d [%s] %s\n", f.File, f.Line, f.Severity, oneLine(f.Title, 160))
+		line := fmt.Sprintf("%s:%d [%s] %s\n", oneLine(f.File, 300), f.Line, oneLine(f.Severity, 20), oneLine(f.Title, 160))
 		if !budget(line) {
 			fmt.Fprintf(&sb, "... and %d more\n", len(findings)-i)
 			break
@@ -94,7 +106,8 @@ func BuildCrossChunkUserPrompt(title string, digests []ChunkDigest, findings []C
 	}
 
 	sb.WriteString("\n=== Changed lines (new file numbering) ===\n")
-	for i, l := range changedLines {
+	for i, f := range changedLines {
+		l := oneLine(f.Path, 300) + ": " + oneLine(f.Ranges, 300)
 		if !budget(l + "\n") {
 			fmt.Fprintf(&sb, "... and %d more files\n", len(changedLines)-i)
 			break
