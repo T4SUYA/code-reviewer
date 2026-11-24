@@ -278,6 +278,14 @@ func packOwn(own []*packItem, limit int) [][]*packItem {
 		for _, it := range u.items {
 			u.tokens += it.tokens
 		}
+		if u.tokens > limit && len(u.items) > 1 {
+			// The pairing does not fit one group, so the files are packed one by
+			// one; they still share a group wherever there is room.
+			for _, it := range u.items {
+				units = append(units, unit{items: []*packItem{it}, tokens: it.tokens})
+			}
+			continue
+		}
 		units = append(units, u)
 	}
 	sort.SliceStable(units, func(i, j int) bool {

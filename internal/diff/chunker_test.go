@@ -530,3 +530,35 @@ func TestSplitStrategy_EveryFileOnceAndChunksFit(t *testing.T) {
 		}
 	}
 }
+
+// A source file with its tests, or the same stem in several languages, that
+// together outgrow the target is packed file by file: only a single file may
+// exceed the target.
+func TestSplitStrategy_SameStemUnitLargerThanTheTargetIsPackedPerFile(t *testing.T) {
+	diffs := []FileDiff{
+		sizedDiff("pkg/foo.go", 150), sizedDiff("pkg/foo_test.go", 150), sizedDiff("pkg/foo.py", 150),
+		sizedDiff("pkg/bar.go", 40), sizedDiff("pkg/bar_test.go", 40),
+	}
+	const target = 200
+	chunks, err := (&SplitStrategy{TargetTokens: target}).Chunk(diffs, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, c := range chunks {
+		seen += len(c)
+		if len(c) > 1 && EstimateTokens(c) > target {
+			t.Errorf("chunk %v holds %d files and ~%d tokens, over the target", chunkPaths([][]FileDiff{c}), len(c), EstimateTokens(c))
+		}
+	}
+	if seen != len(diffs) {
+		t.Errorf("%d files in the chunks, want %d", seen, len(diffs))
+	}
+	// A unit that fits still stays together.
+	for _, c := range chunks {
+		paths := chunkPaths([][]FileDiff{c})[0]
+		if slices.Contains(paths, "pkg/bar.go") != slices.Contains(paths, "pkg/bar_test.go") {
+			t.Errorf("bar.go and its test were separated: %v", chunkPaths(chunks))
+		}
+	}
+}
