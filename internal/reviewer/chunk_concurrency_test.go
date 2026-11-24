@@ -79,9 +79,11 @@ func TestReviewWave_ResultsInChunkOrderWhateverFinishesFirst(t *testing.T) {
 	for i, f := range files {
 		prompts[i] = "marker:" + f
 	}
-	results, err := r.reviewWave(context.Background(), "sys", prompts, 0)
-	if err != nil {
-		t.Fatal(err)
+	results, errs := r.reviewWave(context.Background(), "sys", prompts)
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
 	}
 	for i, f := range files {
 		if results[i].Summary != f {
@@ -93,28 +95,27 @@ func TestReviewWave_ResultsInChunkOrderWhateverFinishesFirst(t *testing.T) {
 	}
 }
 
-func TestReviewWave_ReportsLowestNumberedFailure(t *testing.T) {
+func TestReviewWave_ReportsEachCallsOwnOutcome(t *testing.T) {
 	errSecond := errors.New("second failed")
 	errFourth := errors.New("fourth failed")
 	m := &funcModel{fn: func(prompt string) (*model.ReviewResult, error) {
 		switch {
 		case strings.Contains(prompt, "p2"):
-			time.Sleep(50 * time.Millisecond) // Finishes after chunk 4's failure.
+			time.Sleep(50 * time.Millisecond) // Finishes after the fourth call's failure.
 			return nil, errSecond
 		case strings.Contains(prompt, "p4"):
 			return nil, errFourth
 		}
-		return &model.ReviewResult{}, nil
+		return &model.ReviewResult{Summary: prompt}, nil
 	}}
 	r := &Reviewer{provider: m}
 
-	// The wave starts at chunk 5, so the labels are 6..9 and the failure is chunk 7.
-	_, err := r.reviewWave(context.Background(), "sys", []string{"p1", "p2", "p3", "p4"}, 5)
-	if !errors.Is(err, errSecond) {
-		t.Fatalf("err = %v, want the second call's error", err)
+	results, errs := r.reviewWave(context.Background(), "sys", []string{"p1", "p2", "p3", "p4"})
+	if !errors.Is(errs[1], errSecond) || !errors.Is(errs[3], errFourth) || errs[0] != nil || errs[2] != nil {
+		t.Fatalf("errs = %v, want only the second and fourth calls to fail", errs)
 	}
-	if !strings.Contains(err.Error(), "model review (chunk 7)") {
-		t.Errorf("err = %q, want it to name chunk 7", err)
+	if results[0].Summary != "p1" || results[2].Summary != "p3" || results[1] != nil || results[3] != nil {
+		t.Errorf("results = %v, want the successful calls answered in place", results)
 	}
 }
 
@@ -192,9 +193,9 @@ func TestRun_DefaultConcurrencyIsSequential(t *testing.T) {
 	}
 }
 
-func TestRun_ConcurrentErrorIsReported(t *testing.T) {
+func TestRun_ConcurrentFatalErrorIsReported(t *testing.T) {
 	files := []string{"a.go", "b.go", "c.go"}
-	boom := errors.New("model unavailable")
+	boom := model.MarkFatal(errors.New("model unavailable"))
 	m := &funcModel{fn: func(prompt string) (*model.ReviewResult, error) {
 		if chunkOf(prompt, files) == "b.go" {
 			return nil, boom
@@ -206,6 +207,25 @@ func TestRun_ConcurrentErrorIsReported(t *testing.T) {
 	_, err := NewWithDiffSource(cfg, m, &mockVCS{}, &mockDiffSource{diffs: markedDiffs(files...)}).Run(context.Background())
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "model review (chunk 2)") {
 		t.Fatalf("err = %v, want chunk 2's error", err)
+	}
+}
+
+func TestRun_ConcurrentFailureSkipsOnlyThatChunk(t *testing.T) {
+	files := []string{"a.go", "b.go", "c.go"}
+	m := &funcModel{fn: func(prompt string) (*model.ReviewResult, error) {
+		if chunkOf(prompt, files) == "b.go" {
+			return nil, errors.New("answer could not be read")
+		}
+		return &model.ReviewResult{Findings: []model.Finding{findingFor(chunkOf(prompt, files))}}, nil
+	}}
+	cfg := chunkCfg(t)
+	cfg.ChunkConcurrency = 3
+	count, err := NewWithDiffSource(cfg, m, &mockVCS{}, &mockDiffSource{diffs: markedDiffs(files...)}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("findings = %d, want 2", count)
 	}
 }
 

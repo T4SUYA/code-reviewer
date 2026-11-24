@@ -301,3 +301,54 @@ func TestNewChunkStrategyWithTarget(t *testing.T) {
 		t.Error("expected an error for an unknown strategy")
 	}
 }
+
+func TestSplitChunk(t *testing.T) {
+	sized := func(lines ...int) []FileDiff {
+		var ds []FileDiff
+		for i, n := range lines {
+			d := makeTestDiffs(1, n)[0]
+			d.NewPath = fmt.Sprintf("f%d.go", i)
+			ds = append(ds, d)
+		}
+		return ds
+	}
+	paths := func(ds []FileDiff) string {
+		var p []string
+		for _, d := range ds {
+			p = append(p, d.NewPath)
+		}
+		return strings.Join(p, ",")
+	}
+
+	tests := []struct {
+		name  string
+		chunk []FileDiff
+		want  []string // paths of each half; nil when the chunk cannot be split.
+	}{
+		{"empty", nil, nil},
+		{"one file", sized(10), nil},
+		{"two files", sized(10, 10), []string{"f0.go", "f1.go"}},
+		{"even files halve by count", sized(10, 10, 10, 10), []string{"f0.go,f1.go", "f2.go,f3.go"}},
+		{"halves balance by size", sized(60, 10, 10, 10, 10), []string{"f0.go", "f1.go,f2.go,f3.go,f4.go"}},
+		{"neither half is empty", sized(1, 1, 100), []string{"f0.go,f1.go", "f2.go"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parts := SplitChunk(tt.chunk)
+			if tt.want == nil {
+				if parts != nil {
+					t.Fatalf("SplitChunk = %v, want nil", parts)
+				}
+				return
+			}
+			if len(parts) != len(tt.want) {
+				t.Fatalf("got %d parts, want %d", len(parts), len(tt.want))
+			}
+			for i, w := range tt.want {
+				if got := paths(parts[i]); got != w {
+					t.Errorf("part %d = %s, want %s", i, got, w)
+				}
+			}
+		})
+	}
+}

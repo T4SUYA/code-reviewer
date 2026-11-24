@@ -17,6 +17,7 @@ import (
 type TokenUsage = pkgmodel.TokenUsage
 type ReviewResult = pkgmodel.ReviewResult
 type Finding = pkgmodel.Finding
+type SkippedFile = pkgmodel.SkippedFile
 
 // Provider wraps the Vertex AI genai client for code review.
 type Provider struct {

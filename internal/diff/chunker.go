@@ -219,3 +219,23 @@ func NewChunkStrategyWithTarget(name string, targetTokens int) (ChunkStrategy, e
 		return nil, fmt.Errorf("unknown chunk strategy: %q (valid: fail, split)", name)
 	}
 }
+
+// SplitChunk cuts a chunk into two parts of about equal estimated size, in
+// input order, so files that were packed together stay together. Neither part
+// is empty. It returns nil for a chunk that cannot be cut: fewer than two
+// files.
+func SplitChunk(chunk []FileDiff) [][]FileDiff {
+	if len(chunk) < 2 {
+		return nil
+	}
+	total := EstimateTokens(chunk)
+	cut, running := 1, 0
+	for i := range chunk[:len(chunk)-1] {
+		running += estimateFileDiffTokens(&chunk[i])
+		cut = i + 1
+		if running*2 >= total {
+			break
+		}
+	}
+	return [][]FileDiff{chunk[:cut:cut], chunk[cut:]}
+}

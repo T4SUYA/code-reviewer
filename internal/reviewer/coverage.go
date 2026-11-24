@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/OpticDiff/code-reviewer/internal/diff"
+	"github.com/OpticDiff/code-reviewer/internal/model"
 	"github.com/OpticDiff/code-reviewer/internal/vcs"
 )
 
@@ -16,16 +17,19 @@ const (
 	SkipEmptyPatch = "empty_patch"
 	SkipBudget     = "budget"
 	SkipParseError = "parse_error"
+	// SkipModelError marks a file whose review failed even when sent alone or in
+	// the smallest part the reviewer can cut.
+	SkipModelError = "model_error"
+	// SkipTruncated marks a file whose answer was still cut off by the output
+	// limit when sent alone or in the smallest part.
+	SkipTruncated = "truncated"
 )
 
 // skipReasonOrder fixes the order in which reasons appear in the coverage line.
-var skipReasonOrder = []string{SkipTooLarge, SkipCollapsed, SkipEmptyPatch, SkipBudget, SkipParseError}
+var skipReasonOrder = []string{SkipTooLarge, SkipCollapsed, SkipEmptyPatch, SkipBudget, SkipParseError, SkipModelError, SkipTruncated}
 
 // SkippedFile is a file that was part of the change but never reviewed.
-type SkippedFile struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason"`
-}
+type SkippedFile = model.SkippedFile
 
 // splitUnreviewable separates files that carry no reviewable patch from the
 // rest. Files without a recorded SkipReason are always kept.
@@ -75,9 +79,10 @@ type coverage struct {
 
 // buildCoverage assembles the skipped-file list from every source. inScope is
 // the number of files that entered the budget stage; unreviewable files and
-// parse failures never did, so they add to the total. Files matching
-// excludedPatterns are not counted.
-func buildCoverage(inScope int, unreviewable []SkippedFile, parseFailed, budgetSkipped []string, excludedPatterns []string) coverage {
+// parse failures never did, so they add to the total. unreviewed are files that
+// were in scope but whose review failed. Files matching excludedPatterns are
+// not counted.
+func buildCoverage(inScope int, unreviewable []SkippedFile, parseFailed, budgetSkipped []string, unreviewed []SkippedFile, excludedPatterns []string) coverage {
 	c := coverage{total: inScope + len(unreviewable)}
 	c.skipped = append(c.skipped, unreviewable...)
 	for _, p := range parseFailed {
@@ -90,6 +95,7 @@ func buildCoverage(inScope int, unreviewable []SkippedFile, parseFailed, budgetS
 	for _, p := range budgetSkipped {
 		c.skipped = append(c.skipped, SkippedFile{Path: p, Reason: SkipBudget})
 	}
+	c.skipped = append(c.skipped, unreviewed...)
 	return c
 }
 

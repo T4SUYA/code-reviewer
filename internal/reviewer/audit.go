@@ -26,6 +26,10 @@ type AuditEntry struct {
 	FilesReviewed  []string           `json:"files_reviewed"`
 	FilesSkipped   []string           `json:"files_skipped,omitempty"`
 	FilesSkippedDetail []SkippedFile `json:"files_skipped_detail,omitempty"`
+	// Chunks is the number of chunks the review ran in; ChunksSplit counts those
+	// cut in halves and reviewed again after a failed or truncated model call.
+	Chunks         int                `json:"chunks,omitempty"`
+	ChunksSplit    int                `json:"chunks_split,omitempty"`
 	FindingsCount  int                `json:"findings_count"`
 	ProfileFilteredCount int          `json:"profile_filtered_count,omitempty"`
 	DedupedCount   int                `json:"deduped_count,omitempty"`

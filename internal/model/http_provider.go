@@ -244,7 +244,7 @@ func (p *HTTPProvider) generateRaw(ctx context.Context, systemPrompt, userPrompt
 		} else if p.tokenSource != nil {
 			tok, tokErr := p.tokenSource.Token()
 			if tokErr != nil {
-				return fmt.Errorf("obtaining GCP access token: %w", tokErr)
+				return MarkFatal(fmt.Errorf("obtaining GCP access token: %w", tokErr))
 			}
 			req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 		}

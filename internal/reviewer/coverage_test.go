@@ -137,7 +137,7 @@ func TestSkipReasonFor(t *testing.T) {
 }
 
 func TestEmptyPatchDoesNotBlockApproval(t *testing.T) {
-	c := buildCoverage(1, []SkippedFile{{Path: "bin.png", Reason: SkipEmptyPatch}, {Path: "big.go", Reason: SkipTooLarge}}, nil, nil, nil)
+	c := buildCoverage(1, []SkippedFile{{Path: "bin.png", Reason: SkipEmptyPatch}, {Path: "big.go", Reason: SkipTooLarge}}, nil, nil, nil, nil)
 	got := c.blockingPaths()
 	if len(got) != 1 || got[0] != "big.go" {
 		t.Errorf("blockingPaths = %v, want [big.go]", got)

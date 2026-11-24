@@ -149,6 +149,8 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 	var totalUsage model.TokenUsage
 	var dedupedCount int
 	var cacheHits int
+	var chunksRun, chunksSplit int
+	var reviewSkipped []SkippedFile
 	var agentVerdicts []FindingVerdict
 	var agentAudit *AgentAudit
 
@@ -166,9 +168,11 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 		if d == nil {
 			d = diffs
 		}
-		cov := buildCoverage(inScope, unreviewable, r.parseFailedFiles, skippedFiles, r.cfg.ExcludedPatterns)
+		cov := buildCoverage(inScope, unreviewable, r.parseFailedFiles, skippedFiles, reviewSkipped, r.cfg.ExcludedPatterns)
 		entry := buildAuditEntry(r.cfg, d, cov.paths(), allFindings, dedupedCount, cacheHits, &totalUsage, time.Since(start))
 		entry.FilesSkippedDetail = cov.skipped
+		entry.Chunks = chunksRun
+		entry.ChunksSplit = chunksSplit
 		entry.ProfileFilteredCount = r.profileFilteredCount
 		entry.SuggestionsDropped = r.suggestionsDropped
 		entry.AgentVerdicts = agentVerdicts
@@ -283,7 +287,7 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 
 	if len(diffs) == 0 {
 		slog.Info("no files to review after incremental filtering")
-		if line := buildCoverage(inScope, unreviewable, r.parseFailedFiles, nil, r.cfg.ExcludedPatterns).line(); line != "" {
+		if line := buildCoverage(inScope, unreviewable, r.parseFailedFiles, nil, nil, r.cfg.ExcludedPatterns).line(); line != "" {
 			// Nothing was reviewed, so say so where the author will see it
 			// instead of leaving the MR without any note.
 			fmt.Println("⚠️  " + line)
@@ -502,11 +506,27 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 	}
 	systemPrompt = model.WithConfidenceFloor(systemPrompt, r.cfg.ConfidenceFloor)
 	var summary string
-	var chunkSummaries []string
 
 	budgetExceeded := false
 	anyTruncated := false
 	reviewedFiles := make(map[string]bool)
+
+	// A chunk prompt lists every changed file when the review ran in more than
+	// one chunk, and a chunk that is cut in parts makes it more than one.
+	promptFor := func(chunk []diff.FileDiff) string {
+		numberedDiff := buildNumberedDiff(chunk)
+		if len(chunks) > 1 || len(chunk) < len(diffs) {
+			numberedDiff = buildChangedFilesSection(auditDiffs, tokenLimit/changedFilesBudgetDivisor) + numberedDiff
+		}
+		return model.BuildUserPromptWithContext(mrTitle, mrDesc, numberedDiff, contextSnippets)
+	}
+	run := &chunkRun{
+		r:            r,
+		systemPrompt: systemPrompt,
+		promptFor:    promptFor,
+		usage:        &totalUsage,
+		reviewed:     reviewedFiles,
+	}
 
 	// Chunks are reviewed in waves of up to ChunkConcurrency at once. Results
 	// are merged in chunk order and the runtime budget is checked after each
@@ -520,34 +540,17 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			chunk := chunks[i]
 			slog.Info(fmt.Sprintf("reviewing chunk %d/%d (%d files, ~%d tokens)",
 				i+1, len(chunks), len(chunk), diff.EstimateTokens(chunk)))
-
-			numberedDiff := buildNumberedDiff(chunk)
-			if len(chunks) > 1 {
-				numberedDiff = buildChangedFilesSection(auditDiffs, tokenLimit/changedFilesBudgetDivisor) + numberedDiff
-			}
-			userPrompts = append(userPrompts, model.BuildUserPromptWithContext(mrTitle, mrDesc, numberedDiff, contextSnippets))
+			userPrompts = append(userPrompts, promptFor(chunk))
 		}
 
-		results, err := r.reviewWave(ctx, systemPrompt, userPrompts, start)
-		if err != nil {
-			return 0, err
-		}
-
-		for j, result := range results {
+		results, errs := r.reviewWave(ctx, systemPrompt, userPrompts)
+		for j := range results {
 			i := start + j
-			if result.Truncated {
-				anyTruncated = true
-				slog.Warn("chunk review response was truncated by model; files in this chunk will not be cached", "chunk", i+1)
-			} else {
-				for _, d := range chunks[i] {
-					reviewedFiles[d.NewPath] = true
-				}
+			if err := run.settle(ctx, chunks[i], fmt.Sprint(i+1), results[j], errs[j]); err != nil {
+				return 0, err
 			}
-
-			chunkSummaries = append(chunkSummaries, result.Summary)
-			allFindings = append(allFindings, result.Findings...)
-			totalUsage.Add(result.Usage)
 		}
+		chunksRun = end
 
 		// Runtime budget safety net — stop if actual usage exceeds limit.
 		if r.cfg.MaxTokens > 0 && totalUsage.TotalTokens >= int64(r.cfg.MaxTokens) {
@@ -559,17 +562,28 @@ func (r *Reviewer) Run(ctx context.Context) (int, error) {
 			budgetExceeded = true
 		}
 	}
+	if err := run.failure(); err != nil {
+		return 0, err
+	}
+	allFindings = append(allFindings, run.findings...)
+	chunksSplit = run.split
+	reviewSkipped = run.unreviewed
+	anyTruncated = run.truncated
 
 	// If budget was exceeded, track skipped files from unreviewed chunks.
 	if budgetExceeded {
+		alreadySkipped := make(map[string]bool, len(reviewSkipped))
+		for _, s := range reviewSkipped {
+			alreadySkipped[s.Path] = true
+		}
 		for _, d := range diffs {
-			if !reviewedFiles[d.NewPath] {
+			if !reviewedFiles[d.NewPath] && !alreadySkipped[d.NewPath] {
 				skippedFiles = append(skippedFiles, d.NewPath)
 			}
 		}
 	}
 
-	summary = mergeChunkSummaries(chunkSummaries)
+	summary = mergeChunkSummaries(run.summaries)
 	if summary == "" {
 		if len(cachedFindings) == 0 {
 			summary = "Review complete: no issues found."
@@ -688,7 +702,7 @@ skipAgent:
 	allFindings = filterBySeverity(allFindings, r.cfg.MinSeverity)
 	slog.Info(fmt.Sprintf("%d finding(s) at or above %s severity", len(allFindings), r.cfg.MinSeverity))
 
-	cov := buildCoverage(inScope, unreviewable, r.parseFailedFiles, skippedFiles, r.cfg.ExcludedPatterns)
+	cov := buildCoverage(inScope, unreviewable, r.parseFailedFiles, skippedFiles, reviewSkipped, r.cfg.ExcludedPatterns)
 	if line := cov.line(); line != "" {
 		summary += "\n\n" + line
 	}
@@ -715,8 +729,11 @@ skipAgent:
 	}
 
 	result := &model.ReviewResult{
-		Summary:  summary,
-		Findings: allFindings,
+		Summary:      summary,
+		Findings:     allFindings,
+		Chunks:       chunksRun,
+		ChunksSplit:  chunksSplit,
+		FilesSkipped: cov.skipped,
 	}
 	if totalUsage.TotalTokens > 0 {
 		result.Usage = &totalUsage

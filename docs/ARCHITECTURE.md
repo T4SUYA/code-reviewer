@@ -358,7 +358,7 @@ Two strategies controlled by `--chunk-strategy`:
 
 `--chunk-target-tokens N` lowers the `split` packing size to `N` estimated tokens (never above the 80% limit). A file larger than the target gets a chunk of its own.
 
-`--chunk-concurrency K` reviews chunks in waves of `K`: the calls of a wave run at once, their results are merged in chunk order, and the runtime token-budget check runs between waves. If a call in a wave fails, the error of the lowest-numbered failing chunk is returned.
+`--chunk-concurrency K` reviews chunks in waves of `K`: the calls of a wave run at once, their results are merged in chunk order, and the runtime token-budget check runs between waves. A call that fails (or whose answer is truncated) does not fail the wave: `chunkRun.settle` cuts that chunk in halves with `diff.SplitChunk` and reviews each half, recursively, down to a single file. What still fails is recorded as skipped (`model_error`, `truncated`). `model.IsFatal` marks the errors no smaller request can cure (HTTP 401, 403 and 404, missing credentials, errors marked with `model.MarkFatal`); those, and a cancelled context, return the error of the chunk at once, as does a run in which no call ever returned a complete answer.
 
 Token estimation: 1 token ≈ 4 characters.
 
@@ -614,6 +614,8 @@ Full `ReviewResult` struct serialized with `json.MarshalIndent`:
   }
 }
 ```
+
+`chunks`, `chunks_split` and `files_skipped_detail` (an array of `{"path", "reason"}`) are present when non-zero: the number of chunks the review ran in, the number cut in halves after a failed or truncated call, and the files of the change that were not reviewed.
 
 `usage` sums every model call of the run (review chunks, the intent pass and the agent loop); the audit log carries the same object. All five keys are always present, zero when the provider does not report a count. `cached_input_tokens` is a subset of `input_tokens`, the part of the prompt the provider served from a cache; `input_tokens` is not reduced by it, so a caller that prices a run bills `input_tokens - cached_input_tokens` at the full input rate and `cached_input_tokens` at the cached rate. `thinking_tokens` counts reasoning tokens. A Vertex AI response reports them apart from `output_tokens` (they are part of `total_tokens`); an OpenAI-compatible response reports them as part of `output_tokens`.
 

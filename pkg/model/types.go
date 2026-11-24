@@ -6,6 +6,21 @@ type ReviewResult struct {
 	Findings  []Finding   `json:"findings"`
 	Usage     *TokenUsage `json:"usage,omitempty"`
 	Truncated bool        `json:"truncated,omitempty"`
+
+	// Chunks is the number of chunks the review ran in, and ChunksSplit how
+	// many of them were cut in halves and reviewed again after a failed or
+	// truncated model call. FilesSkipped lists the files of the change that
+	// were not reviewed, with the reason. The reviewer fills all three in its
+	// report; a model's own answer leaves them empty.
+	Chunks       int           `json:"chunks,omitempty"`
+	ChunksSplit  int           `json:"chunks_split,omitempty"`
+	FilesSkipped []SkippedFile `json:"files_skipped_detail,omitempty"`
+}
+
+// SkippedFile is a file that was part of the change but never reviewed.
+type SkippedFile struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 
 // Finding is a single review comment from the model.

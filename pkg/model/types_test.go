@@ -68,3 +68,24 @@ func TestMultiProvider_SumsCachedAndThinkingTokens(t *testing.T) {
 		t.Errorf("usage = %+v, want %+v", res.Usage, want)
 	}
 }
+
+func TestReviewResult_JSONCarriesChunkCountsAndSkippedFiles(t *testing.T) {
+	data, err := json.Marshal(ReviewResult{
+		Summary:      "s",
+		Chunks:       4,
+		ChunksSplit:  1,
+		FilesSkipped: []SkippedFile{{Path: "a.go", Reason: "model_error"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"summary":"s","findings":null,"chunks":4,"chunks_split":1,"files_skipped_detail":[{"path":"a.go","reason":"model_error"}]}`
+	if string(data) != want {
+		t.Errorf("json = %s\nwant   %s", data, want)
+	}
+
+	data, _ = json.Marshal(ReviewResult{Summary: "s"})
+	if string(data) != `{"summary":"s","findings":null}` {
+		t.Errorf("a review that reports nothing extra changed shape: %s", data)
+	}
+}
