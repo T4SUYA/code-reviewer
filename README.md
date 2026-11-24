@@ -344,6 +344,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `--chunk-strategy` | `fail` or `split` | `fail` |
 | `--chunk-target-tokens` | With `split`, pack chunks to this many estimated tokens instead of 80% of the context limit (0 = 80% of the limit) | — |
 | `--chunk-concurrency` | Review up to this many chunks at once (0 or 1 = one at a time) | — |
+| `--local-diff` | Produce the patch of a file the platform withheld (too large, collapsed, incomplete) with `git diff <base>...<head> -- <path>` when the local checkout holds both commits; `--local-diff=false` reports such files as not reviewed | `true` |
 | `--token-limit` | Context window token limit override (0 = use model default) | — |
 | `--confidence-floor` | Minimum model confidence percent (1-100) required to report a finding | `80` |
 | `--context-files` | Directory-scoped guidance files (comma-separated, e.g. `AGENTS.md`) | — |
@@ -420,6 +421,7 @@ Settings are applied in priority order: **CLI flags > env vars > `.code-reviewer
 | `REVIEW_CHUNK_STRATEGY` | Chunk strategy | `fail` |
 | `REVIEW_CHUNK_TARGET_TOKENS` | Chunk size target in estimated tokens (with `split`) | — |
 | `REVIEW_CHUNK_CONCURRENCY` | Chunks reviewed at once | — |
+| `REVIEW_LOCAL_DIFF` | Set to `false` to never diff withheld files from the local checkout | `true` |
 | `REVIEW_TOKEN_LIMIT` | Context window token limit override | — |
 | `REVIEW_CONFIDENCE_FLOOR` | Minimum model confidence percent (1-100) to report a finding | `80` |
 | `REVIEW_CONTEXT_FILES` | Directory-scoped guidance files, comma-separated | — |
@@ -468,6 +470,7 @@ token_limit: 1000000     # Optional: explicit context window token limit overrid
 chunk_strategy: split    # Optional: split large diffs instead of failing
 chunk_target_tokens: 150000  # Optional: with split, pack chunks to ~150k tokens instead of 80% of the context limit
 chunk_concurrency: 4     # Optional: review up to 4 chunks at once
+local_diff: true         # Optional: false = do not diff files the platform withheld from the local checkout
 confidence_floor: 80     # Optional: minimum model confidence percent (1-100) to report a finding
 temperature: 0           # Optional: sampling temperature (0-2); unset = built-in 0.2
 use_temperature: true    # Optional: false = send no temperature at all (model default applies)
@@ -988,6 +991,10 @@ With `split`, two options tune how the work is divided:
 - **`--chunk-concurrency K`** (`chunk_concurrency`) reviews up to `K` chunks at once. Findings and summaries are merged in chunk order whatever order the calls finish in, and `1` or unset reviews one chunk at a time. Each call retries rate-limit errors (HTTP 429) on its own, so a higher value mainly trades quota for wall-clock time. The `--max-tokens` runtime check runs after each group of `K` chunks, so the chunks of the group that crosses the budget are all spent before the run stops.
 
 A review does not stop at a chunk it cannot get an answer for. When a model call fails after the provider's own retries, or its answer is cut off by the output limit, the chunk is cut in halves by size and each half is reviewed on its own, down to a single file, and a single file is cut at a hunk boundary into two parts, down to a single hunk. A file with a hunk that still fails is reported as not reviewed (`model_error`, or `truncated` when only a cut-off answer came back, whose findings are kept), the other chunks' findings stay, and the run ends as a normal review. Errors that mean no request can work stop the run at once: credentials that are missing or refused (HTTP 401, 403), an unknown model (HTTP 404), and a cancelled run. So does a run in which no model call ever returned a complete answer. The `--json` document and the audit log report `chunks` (how many chunks the review ran in), `chunks_split` (how many were cut in halves after a failure) and `files_skipped_detail` (each unreviewed file with its reason), and the summary keeps its "Reviewed N of M files" sentence. This applies to every `--chunk-strategy`: with `fail`, a diff that fits one request is reviewed as one chunk and is cut in halves only if that request fails or is truncated.
+
+### Files the platform will not supply
+
+When the platform returns a file as too large, collapsed or incomplete, and the working directory is a git checkout that holds both commits of the change (the base and head the platform reports), the patch is produced locally with `git diff <base>...<head> -- <path>` (both paths for a renamed file) and the file is reviewed like any other. Commit ids must be plain hex ids and paths are passed to git as arguments after `--`, never through a shell; external diff programs and text conversion filters are disabled, and a patch over 32 MiB is left unreviewed. Without such a checkout, or with `--local-diff=false`, nothing changes: the file is reported as not reviewed with its reason. Files matching `excluded_patterns` are never diffed.
 
 ## Caching
 

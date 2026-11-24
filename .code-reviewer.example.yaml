@@ -118,6 +118,11 @@ chunk_strategy: fail
 # 1 or unset reviews one chunk at a time.
 # chunk_concurrency: 4
 
+# Produce the patch of a file the platform withheld (too large, collapsed,
+# incomplete) with git when the checkout holds both commits (default true).
+# false reports such files as not reviewed.
+# local_diff: false
+
 # File patterns to exclude from review (glob syntax).
 excluded_patterns:
   - "go.sum"

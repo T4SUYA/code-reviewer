@@ -994,9 +994,32 @@ func (r *Reviewer) getCIDiffs(ctx context.Context) ([]diff.FileDiff, string, str
 		r.parseFailedFiles = append(r.parseFailedFiles, fmt.Sprintf("(%d file(s) missing from the platform's diff listing)", mr.MissingFiles))
 	}
 
+	// Files the platform withheld are diffed with git when the checkout holds
+	// both commits. The check runs at most once, on the first such file.
+	var local *localDiffer
+	localChecked := false
+
 	// Parse each file's diff.
 	var diffs []diff.FileDiff
 	for _, change := range mr.Changes {
+		if !r.cfg.DisableLocalDiff && (change.Incomplete || change.TooLarge || change.Collapsed) &&
+			len(diff.Filter([]diff.FileDiff{{OldPath: change.OldPath, NewPath: change.NewPath}}, r.cfg.ExcludedPatterns)) > 0 {
+			if !localChecked {
+				localChecked = true
+				base := mr.BaseSHA
+				if base == "" {
+					base = r.cfg.CIDiffBaseSHA
+				}
+				local = newLocalDiffer(ctx, findRepoRoot(), base, mr.HeadSHA)
+			}
+			if local != nil {
+				if patch, ok := local.patch(ctx, change.OldPath, change.NewPath); ok {
+					slog.Info("diffed a file the platform withheld from the local checkout", "file", change.NewPath)
+					change.Diff = patch
+					change.Incomplete, change.TooLarge, change.Collapsed = false, false, false
+				}
+			}
+		}
 		if change.Incomplete {
 			// The platform could not supply this patch. Reviewing it as empty would
 			// pass code the model never saw, so flag it as unreviewed unless excluded.

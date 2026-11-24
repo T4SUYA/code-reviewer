@@ -100,6 +100,8 @@ func (c *Client) GetMRChanges(ctx context.Context, projectID, prNumber string) (
 		State:       pr.State,
 		Draft:       pr.Draft,
 		Changes:     vcsChanges,
+		BaseSHA:     pr.Base.SHA,
+		HeadSHA:     pr.Head.SHA,
 	}, nil
 }
 

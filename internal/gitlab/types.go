@@ -18,6 +18,11 @@ type MergeRequest struct {
 	Draft       bool   `json:"draft"`
 	// ChangesCount is a string, not an integer, and is "1000+" when capped.
 	ChangesCount string `json:"changes_count"`
+	// DiffRefs holds the commits the merge request's diff is taken between.
+	DiffRefs struct {
+		BaseSHA string `json:"base_sha"`
+		HeadSHA string `json:"head_sha"`
+	} `json:"diff_refs"`
 }
 
 

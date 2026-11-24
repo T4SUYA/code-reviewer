@@ -1735,6 +1735,62 @@ func TestLoad_ResponseSchema(t *testing.T) {
 	}
 }
 
+// TestLoad_LocalDiff verifies local_diff is on by default and can be
+// turned off from YAML, env and flag with the usual precedence.
+func TestLoad_LocalDiff(t *testing.T) {
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+
+	tests := []struct {
+		name         string
+		yaml         string
+		env          string
+		args         []string
+		wantDisabled bool
+	}{
+		{name: "enabled by default", args: []string{"--diff"}},
+		{name: "yaml false disables", yaml: "local_diff: false\n", args: []string{"--diff"}, wantDisabled: true},
+		{name: "yaml true keeps enabled", yaml: "local_diff: true\n", args: []string{"--diff"}},
+		{name: "env false disables", env: "false", args: []string{"--diff"}, wantDisabled: true},
+		{name: "invalid env is ignored", env: "maybe", args: []string{"--diff"}},
+		{name: "flag false disables", args: []string{"--diff", "--local-diff=false"}, wantDisabled: true},
+		{name: "flag true overrides env false", env: "false", args: []string{"--diff", "--local-diff=true"}},
+		{name: "flag false overrides yaml true", yaml: "local_diff: true\n", args: []string{"--diff", "--local-diff=false"}, wantDisabled: true},
+		{name: "env true overrides yaml false", yaml: "local_diff: false\n", env: "true", args: []string{"--diff"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			yaml := tt.yaml
+			if yaml == "" {
+				yaml = "model: some-model\n"
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".code-reviewer.yaml"), []byte(yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			oldDir, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chdir(oldDir) }) //nolint:errcheck
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
+			os.Args = append([]string{"code-reviewer"}, tt.args...)
+			t.Setenv("REVIEW_LOCAL_DIFF", tt.env)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() unexpected error: %v", err)
+			}
+			if cfg.DisableLocalDiff != tt.wantDisabled {
+				t.Errorf("DisableLocalDiff = %v, want %v", cfg.DisableLocalDiff, tt.wantDisabled)
+			}
+		})
+	}
+}
+
 // TestReviewSeverities_AreTheAcceptedSeverities keeps the severity enum of the
 // review response schema equal to the set ParseSeverity accepts.
 func TestReviewSeverities_AreTheAcceptedSeverities(t *testing.T) {

@@ -63,6 +63,10 @@ inputs:
     description: "Whether to constrain the Vertex AI review response with a JSON schema (true or false; unset = true)"
     required: false
     default: ""
+  local-diff:
+    description: "Whether to diff files the platform withheld from the local checkout when it holds both commits (true or false; unset = true)"
+    required: false
+    default: ""
   prompt-profile:
     description: "Precision/recall stance of the review prompt: precision, balanced or recall (unset = precision)"
     required: false
@@ -228,6 +232,7 @@ runs:
         INPUT_LEARNINGS: ${{ inputs.learnings }}
         INPUT_USE_TEMPERATURE: ${{ inputs.use-temperature }}
         INPUT_RESPONSE_SCHEMA: ${{ inputs.response-schema }}
+        INPUT_LOCAL_DIFF: ${{ inputs.local-diff }}
         INPUT_PROMPT_PROFILE: ${{ inputs.prompt-profile }}
         INPUT_THINKING_LEVEL: ${{ inputs.thinking-level }}
         INPUT_AGENT: ${{ inputs.agent }}
@@ -275,6 +280,7 @@ runs:
         [ -n "${INPUT_LEARNINGS}" ] && ARGS+=(--learnings "${INPUT_LEARNINGS}")
         [ -n "${INPUT_USE_TEMPERATURE}" ] && ARGS+=("--use-temperature=${INPUT_USE_TEMPERATURE}")
         [ -n "${INPUT_RESPONSE_SCHEMA}" ] && ARGS+=("--response-schema=${INPUT_RESPONSE_SCHEMA}")
+        [ -n "${INPUT_LOCAL_DIFF}" ] && ARGS+=("--local-diff=${INPUT_LOCAL_DIFF}")
         [ -n "${INPUT_PROMPT_PROFILE}" ] && ARGS+=(--prompt-profile "${INPUT_PROMPT_PROFILE}")
         [ -n "${INPUT_THINKING_LEVEL}" ] && ARGS+=(--thinking-level "${INPUT_THINKING_LEVEL}")
         [ "${INPUT_AGENT}" = "true" ] && ARGS+=(--agent)

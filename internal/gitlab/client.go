@@ -157,6 +157,8 @@ func (c *Client) GetMRChanges(ctx context.Context, projectID, mrIID string) (*vc
 		Draft:        mr.Draft,
 		Changes:      changes,
 		MissingFiles: missingFiles(mr, len(entries)),
+		BaseSHA:      mr.DiffRefs.BaseSHA,
+		HeadSHA:      mr.DiffRefs.HeadSHA,
 	}, nil
 }
 

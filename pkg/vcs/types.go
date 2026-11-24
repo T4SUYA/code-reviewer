@@ -19,6 +19,11 @@ type MRChanges struct {
 	// MissingFiles is how many files the platform reports changed beyond the
 	// Changes it returned; those files were never seen.
 	MissingFiles int
+	// BaseSHA and HeadSHA are the commits the change is the difference of: the
+	// diff base (or the target branch tip) and the head of the source branch.
+	// Empty when the platform did not report them.
+	BaseSHA string
+	HeadSHA string
 }
 
 // DiffEntry represents a single file change in a merge/pull request.

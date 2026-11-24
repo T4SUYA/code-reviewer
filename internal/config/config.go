@@ -141,6 +141,7 @@ type Config struct {
 	ChunkStrategy      ChunkStrategy
 	ChunkTargetTokens  int    // With the split strategy, pack chunks to this many estimated tokens instead of 80% of the context limit (0 = 80% of the limit).
 	ChunkConcurrency   int    // Chunks reviewed at once (0 or 1 = one at a time).
+	DisableLocalDiff   bool   // Do not produce the patch of a file the platform withheld with git; such files are reported as not reviewed.
 	APIURL             string // HTTP provider: OpenAI-compatible endpoint URL.
 	APIKey             string // HTTP provider: API key (optional, e.g. for IAM/ADC auth).
 
@@ -292,6 +293,7 @@ type repoConfig struct {
 	ChunkStrategy    string   `yaml:"chunk_strategy"`
 	ChunkTargetTokens int      `yaml:"chunk_target_tokens"`
 	ChunkConcurrency  int      `yaml:"chunk_concurrency"`
+	LocalDiff         *bool    `yaml:"local_diff"`
 	CacheDir         string   `yaml:"cache_dir"`
 	NoCache          *bool    `yaml:"no_cache"`
 	CacheMaxAge      string   `yaml:"cache_max_age"` // e.g. "7d", "24h"
@@ -589,6 +591,9 @@ func (c *Config) applyRepoConfig(data []byte) error {
 	if rc.ChunkConcurrency != 0 {
 		c.ChunkConcurrency = rc.ChunkConcurrency
 	}
+	if rc.LocalDiff != nil {
+		c.DisableLocalDiff = !*rc.LocalDiff
+	}
 	if rc.CacheDir != "" {
 		c.CacheDir = rc.CacheDir
 	}
@@ -815,6 +820,14 @@ func (c *Config) loadEnv() {
 			c.ChunkTargetTokens = n
 		}
 	}
+	if v := os.Getenv("REVIEW_LOCAL_DIFF"); v != "" {
+		use, err := strconv.ParseBool(v)
+		if err != nil {
+			slog.Warn("ignoring invalid REVIEW_LOCAL_DIFF", "value", v, "error", err)
+		} else {
+			c.DisableLocalDiff = !use
+		}
+	}
 	if v := os.Getenv("REVIEW_CHUNK_CONCURRENCY"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
@@ -991,6 +1004,7 @@ func (c *Config) loadFlags() error {
 	chunkStrategy := fs.String("chunk-strategy", "", "How to handle large diffs: fail (default) or split")
 	chunkTargetTokens := fs.Int("chunk-target-tokens", 0, "With --chunk-strategy split, pack chunks to this many estimated tokens instead of 80% of the context limit (0 = 80% of the limit)")
 	chunkConcurrency := fs.Int("chunk-concurrency", 0, "Review up to this many chunks at once (0 or 1 = one at a time)")
+	localDiff := fs.Bool("local-diff", true, "Produce the patch of a file the platform withheld (too large, collapsed, incomplete) with git from the local checkout when it holds both commits; --local-diff=false reports such files as not reviewed")
 	extraRules := fs.String("extra-rules", "", "Additional review rules appended to prompt")
 	platformConfig := fs.String("platform-config", "", "Path, comma-separated paths, or glob for platform YAML rules/config")
 	platformReviewMD := fs.String("platform-review-md", "", "Path, comma-separated paths, or glob for platform markdown guidelines")
@@ -1174,6 +1188,9 @@ func (c *Config) loadFlags() error {
 		}
 		if f.Name == "chunk-concurrency" {
 			c.ChunkConcurrency = *chunkConcurrency
+		}
+		if f.Name == "local-diff" {
+			c.DisableLocalDiff = !*localDiff
 		}
 		if f.Name == "confidence-floor" {
 			c.ConfidenceFloor = *confidenceFloor
